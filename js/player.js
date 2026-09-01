@@ -152,6 +152,8 @@ const Player = (() => {
   function clearPanelStrict() {
     pvPanelBlocked = false;
     try { localStorage.removeItem(STRICT_PANEL_KEY); } catch { /* storage blocked */ }
+    vodHlsBroken = false;
+    try { localStorage.removeItem('browplayer_no_vod_hls'); } catch { /* storage blocked */ }
   }
 
   function loadPlaysVideoLib() {
@@ -309,7 +311,8 @@ const Player = (() => {
     } catch (err) {
       destroySsPlayer();
       const s = String(err && err.message || err);
-      if (/\b(458|509)\b/.test(s)) return 'busy';
+      // 551 is this panel-software's second connection-limit code.
+      if (/\b(458|509|551)\b/.test(s)) return 'busy';
       if (current === me && /unsupported-codecs/.test(s)) {
         const mime = s.replace(/^.*unsupported-codecs:\s*/, '');
         let msg;
@@ -389,7 +392,7 @@ const Player = (() => {
         me.pvErrorHandled = true;
         const msg = String(e?.detail?.message || '');
         destroyPvEngine();
-        if (/\b(458|509)\b/.test(msg)) {
+        if (/\b(458|509|551)\b/.test(msg)) {
           me.viaPV = false; // retry the engine once the slot frees
           me.pvErrorHandled = false;
           if (!scheduleBusyRetry()) fail(false, 458);
@@ -407,7 +410,9 @@ const Player = (() => {
           })();
         } else {
           (async () => {
-            if (pvPanelBlocked && await singleStreamChain()) return;
+            // Whatever felled the ranged engine, the single-connection
+            // pipeline is the universal next step - not only on strict panels.
+            if (await singleStreamChain()) return;
             if (await tryHelperReroute()) return;
             if (current === me) fail(false, 0);
           })();
@@ -430,7 +435,7 @@ const Player = (() => {
       me.pvErrorHandled = true;
       destroyPvEngine();
       const s = String(err || '');
-      if (/\b(458|509)\b/.test(s)) return 'busy';
+      if (/\b(458|509|551)\b/.test(s)) return 'busy';
       if (/access control|not allowed by Access-Control|failed to fetch|\b50[0-4]\b/i.test(s)) {
         me.pvCorsBlocked = true;
         markPanelStrict();
@@ -455,13 +460,33 @@ const Player = (() => {
     return true;
   }
 
+  // Some panels have no working VOD-HLS at all (551/404 on …/movie/id.m3u8,
+  // or a manifest that never starts). Once that is proven, remember it so
+  // every later movie skips the doomed attempt and starts on the pipeline
+  // that actually works - persisted like the strict-panel flag, cleared by
+  // Change Playlist. Busy refusals (458/509) never set this: they are about
+  // the connection slot, not about HLS support.
+  const VOD_HLS_KEY = 'browplayer_no_vod_hls';
+  let vodHlsBroken = false;
+  try { vodHlsBroken = localStorage.getItem(VOD_HLS_KEY) === '1'; } catch { /* storage blocked */ }
+  function markVodHlsBroken() {
+    vodHlsBroken = true;
+    try { localStorage.setItem(VOD_HLS_KEY, '1'); } catch { /* storage blocked */ }
+  }
+
   // The panel-HLS-FIRST attempt did not work out (no remux support, broken
   // manifest, or undecodable audio): continue with the direct file through
-  // the engine pipelines, exactly as before that attempt existed.
-  function fallBackFromVodHls(msg) {
+  // the engine pipelines, exactly as before that attempt existed. `remember`
+  // marks the panel's VOD-HLS as broken for infrastructure failures; audio
+  // problems are title-specific and must NOT disable HLS for other titles.
+  function fallBackFromVodHls(msg, remember) {
     if (!current || !current.vodHlsFirst) return false;
+    if (remember) markVodHlsBroken();
     current.vodHlsFirst = false;
     current.url = current.originalUrl;
+    // The HLS attempt may have consumed the busy-retry budget (458 dances) -
+    // the file pipeline starting now deserves its own fresh budget.
+    current.retries = RETRY_DELAYS.length;
     if (hls) { hls.destroy(); hls = null; }
     setStatus(msg || 'The provider has no instant (HLS) version of this title - preparing the file for browser playback…');
     retryTimer = setTimeout(() => { if (current) begin(); }, 200);
@@ -561,7 +586,9 @@ const Player = (() => {
       setStatus('Connection limit reached - waiting for the provider to free the slot…');
       appendBusyInfo();
       (async () => {
-        const deadline = Date.now() + 45000;
+        // Panels can keep a dropped connection counted well past 45s - give
+        // the API poll (which costs no stream slot) a longer budget.
+        const deadline = Date.now() + 90000;
         while (current === me && Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 3500));
           if (current !== me) return;
@@ -587,7 +614,7 @@ const Player = (() => {
   function fail(networkLikely, httpCode) {
     if (hls) { hls.destroy(); hls = null; }
     let msg;
-    if (httpCode === 458 || httpCode === 509) {
+    if (httpCode === 458 || httpCode === 509 || httpCode === 551) {
       markProviderBusy(15000);
       msg = `The provider refused the stream (HTTP ${httpCode}): the account's connection limit is in use. Close any other IPTV app or tab using this account, wait up to a minute for the provider to drop the previous connection, then press Restart stream.`;
       setStatus(msg, true);
@@ -667,19 +694,22 @@ const Player = (() => {
       let status = 0;
       if (code !== 3) status = await probeStatus(url);
       if (current !== my) return; // user switched streams while probing
-      if ((status === 458 || status === 509) && scheduleBusyRetry()) return;
+      if ((status === 458 || status === 509 ||
+           (status === 551 && !current.vodHlsFirst)) && scheduleBusyRetry()) return;
       // Native playback of the panel-HLS-first attempt failed (e.g. Safari,
       // or the panel answered the .m3u8 with something unplayable): fall back
       // to the direct file before interpreting any status as fatal.
-      if (fallBackFromVodHls()) return;
-      if (status === 458 || status === 509 || status === 401 || status === 403 || status === 404) {
+      if (fallBackFromVodHls(null, true)) return;
+      if (status === 458 || status === 509 || status === 551 ||
+          status === 401 || status === 403 || status === 404) {
         fail(false, status);
         return;
       }
       if (tryVodHlsFallback()) return;
-      // Codec/container failure: remux/transcode in the browser, else via the
-      // local helper.
+      // Codec/container failure: remux/transcode in the browser (ranged
+      // engine, then the single-connection pipeline), else the local helper.
       if (code !== 2 && (await tryPlaysVideo()) === 'ok') return;
+      if (code !== 2 && await singleStreamChain()) return;
       if (code !== 2 && await tryHelperReroute()) return;
       const ext = (url.match(/\.([a-z0-9]{2,4})(\?|$)/i)?.[1] || '').toLowerCase();
       let msg;
@@ -719,7 +749,7 @@ const Player = (() => {
         // A busy/slot wait is legitimate waiting - look again later.
         const txt = (me.statusEl && me.statusEl.textContent) || '';
         if (/busy|connection limit|waiting/i.test(txt)) { setTimeout(checkStarted, 10000); return; }
-        fallBackFromVodHls('The provider\'s HLS version did not start - trying the file directly…');
+        fallBackFromVodHls('The provider\'s HLS version did not start - trying the file directly…', true);
       };
       setTimeout(checkStarted, 20000);
     }
@@ -775,8 +805,9 @@ const Player = (() => {
         const httpCode = data.response && typeof data.response.code === 'number' ? data.response.code : 0;
         if ((httpCode === 458 || httpCode === 509) && scheduleBusyRetry()) return;
         // Any other fatal failure of the panel-HLS-first attempt: this panel
-        // does not serve a usable HLS version - use the engine pipeline.
-        if (fallBackFromVodHls()) return;
+        // does not serve a usable HLS version - use the engine pipeline and
+        // remember, so later titles skip the doomed attempt.
+        if (fallBackFromVodHls(null, true)) return;
         // Unrecoverable media error: the local helper can transcode it.
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && await tryHelperReroute()) return;
         // Manifest loaded but the video segments did not: with IPTV panels this
@@ -819,11 +850,10 @@ const Player = (() => {
           fail(false, 458);
           return;
         }
-        // Ranged engine failed on a strict panel: try the single-connection
-        // sequential pipeline before the helper.
-        if (current.pvCorsBlocked || pvPanelBlocked) {
-          if (await singleStreamChain()) return;
-        }
+        // Ranged engine failed - strict panel, no range support, or anything
+        // else: the single-connection sequential pipeline is the universal
+        // last resort before the helper, not just a strict-panel special.
+        if (await singleStreamChain()) return;
         if (await tryHelperReroute()) return;
       }
       // Native HLS (Safari) or direct MP4/MP3/AAC playback.
@@ -834,10 +864,12 @@ const Player = (() => {
         const me = current;
         const status = await probeStatus(url);
         if (current !== me) return;
-        if ((status === 458 || status === 509) && scheduleBusyRetry()) return;
-        if (status === 458 || status === 509 || status === 401 || status === 403 || status === 404) {
+        if ((status === 458 || status === 509 ||
+             (status === 551 && !current.vodHlsFirst)) && scheduleBusyRetry()) return;
+        if (status === 458 || status === 509 || status === 551 ||
+            status === 401 || status === 403 || status === 404) {
           // A refused panel-HLS-first probe is not fatal - use the file itself.
-          if (status !== 458 && status !== 509 && fallBackFromVodHls()) return;
+          if (status !== 458 && status !== 509 && fallBackFromVodHls(null, true)) return;
           fail(false, status);
           return;
         }
@@ -867,7 +899,7 @@ const Player = (() => {
       // engine pipeline, so panels without VOD-HLS lose only one request.
       const canHls = (window.Hls && Hls.isSupported()) ||
         !!videoEl.canPlayType('application/vnd.apple.mpegurl');
-      if (canHls && /\/(movie|series)\//i.test(rawUrl)) {
+      if (canHls && !vodHlsBroken && /\/(movie|series)\//i.test(rawUrl)) {
         current.vodHlsFirst = true;
         current.triedHlsFallback = true; // this IS the HLS attempt
         current.url = rawUrl.replace(/\.[a-z0-9]{2,4}(\?|$)/i, '.m3u8$1');
