@@ -26,19 +26,66 @@ const Xtream = (() => {
     return { server: u.origin + basePath, username, password };
   }
 
-  async function call(creds, action, extra) {
+  // Reads the body while reporting progress, so the caller's watchdog can tell
+  // "still downloading" from "stalled". Falls back to res.text() where the
+  // streaming body is unavailable.
+  async function readBody(res, onProgress) {
+    if (!res.body || typeof res.body.getReader !== 'function') return res.text();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let out = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      out += decoder.decode(value, { stream: true });
+      onProgress(out.length);
+    }
+    return out + decoder.decode();
+  }
+
+  // The watchdog is an INACTIVITY timeout, not a total one: get_vod_streams and
+  // get_series routinely return tens of megabytes and can legitimately take
+  // minutes on a busy panel, so aborting on total elapsed time killed downloads
+  // that were still progressing. The timer restarts on every received chunk,
+  // so only a genuinely stalled connection is cut off.
+  async function call(creds, action, extra, opts) {
+    const idleMs = (opts && opts.idleMs) || TIMEOUT_MS;
+    const onProgress = opts && opts.onProgress;
     const qs = new URLSearchParams({ username: creds.username, password: creds.password });
     if (action) qs.set('action', action);
     if (extra) for (const [k, v] of Object.entries(extra)) qs.set(k, String(v));
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+    let timer = setTimeout(() => ctrl.abort(), idleMs);
+    const bump = (bytes) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => ctrl.abort(), idleMs);
+      if (onProgress) onProgress(bytes);
+    };
     try {
       const apiUrl = `${creds.server}/player_api.php?${qs}`;
       // Through the local bridge when the page is https and the panel http.
       const res = await fetch(typeof Bridge !== 'undefined' ? Bridge.wrapFetch(apiUrl) : apiUrl,
         { signal: ctrl.signal, cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      return await res.json();
+      if (!res.ok) throw new Error('The provider answered HTTP ' + res.status + '.');
+      const text = await readBody(res, bump);
+      if (!text.trim()) throw new Error('The provider returned an empty response.');
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error('The provider returned a malformed response.');
+      }
+    } catch (err) {
+      if (err && err.name === 'AbortError') {
+        throw new Error('The provider stopped responding (no data for ' +
+          Math.round(idleMs / 1000) + 's).');
+      }
+      if (err instanceof TypeError) {
+        // fetch() rejects with TypeError for network-level failures: DNS, TLS,
+        // a blocked mixed-content request, or a missing CORS header.
+        throw new Error('The provider could not be reached from the browser ' +
+          '(network error, or it blocks browser access with CORS).');
+      }
+      throw err;
     } finally {
       clearTimeout(timer);
     }

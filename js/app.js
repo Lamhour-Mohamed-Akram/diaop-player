@@ -441,19 +441,39 @@ function buildXtreamSections(liveCats, vodCats, serCats, liveStreams) {
   if (serMap.size) state.sections.series = { loaded: false, catMap: serMap, catCount: serMap.size };
 }
 
+// Movies and Series are the two heaviest player_api responses (often tens of
+// megabytes), so they get a generous inactivity budget - see Xtream.call.
+const SECTION_IDLE_MS = 90000;
+
+// One shared promise per section: opening Movies, going Back and opening it
+// again must not start a second multi-megabyte download - providers that cap
+// concurrent API requests fail both when that happens.
+const sectionLoads = new Map();
+
 // Lazily fetch Xtream section contents on first open (M3U sections are always
 // already loaded).
-async function ensureSection(key) {
+function ensureSection(key, onProgress) {
   const sec = state.sections[key];
-  if (!sec || sec.loaded) return sec;
+  if (!sec || sec.loaded) return Promise.resolve(sec);
+  let p = sectionLoads.get(key);
+  if (!p) {
+    p = loadSection(key, sec, onProgress).finally(() => sectionLoads.delete(key));
+    sectionLoads.set(key, p);
+  }
+  return p;
+}
+
+async function loadSection(key, sec, onProgress) {
+  const opts = { idleMs: SECTION_IDLE_MS, onProgress };
 
   if (key === 'live') {
-    const data = await Xtream.call(state.creds, 'get_live_streams');
+    const data = await Xtream.call(state.creds, 'get_live_streams', null, opts);
     const { live, radio } = normalizeLiveStreams(Array.isArray(data) ? data : [], sec.catMap);
     Object.assign(sec, makeSection(live, sec.catMap));
     if (radio.length && !state.sections.radio) state.sections.radio = makeSection(radio, null);
   } else if (key === 'movies') {
-    const data = await Xtream.call(state.creds, 'get_vod_streams');
+    const data = await Xtream.call(state.creds, 'get_vod_streams', null, opts);
+    if (!Array.isArray(data)) throw new Error(providerListError(data));
     const items = (Array.isArray(data) ? data : []).map(s => ({
       id: 'M' + s.stream_id,
       streamId: s.stream_id,
@@ -465,7 +485,8 @@ async function ensureSection(key) {
     }));
     Object.assign(sec, makeSection(items, sec.catMap));
   } else if (key === 'series') {
-    const data = await Xtream.call(state.creds, 'get_series');
+    const data = await Xtream.call(state.creds, 'get_series', null, opts);
+    if (!Array.isArray(data)) throw new Error(providerListError(data));
     const items = (Array.isArray(data) ? data : []).map(s => ({
       id: 'S' + s.series_id,
       kind: 'series',
@@ -477,8 +498,20 @@ async function ensureSection(key) {
     }));
     Object.assign(sec, makeSection(items, sec.catMap));
   }
-  if (sec.loaded) saveCache(); // keep lazily loaded sections across reloads too
+  // Keep lazily loaded sections across reloads too. Deferred: cloning a large
+  // catalogue into IndexedDB blocks the main thread, and the list should paint
+  // first.
+  if (sec.loaded) setTimeout(saveCache, 0);
   return sec;
+}
+
+// Some panels answer a list request with an object (an error payload, or the
+// user_info block) instead of an array - usually "no VOD on this account" or a
+// rate limit. Say so rather than showing an empty grid.
+function providerListError(data) {
+  const msg = data && (data.error || data.message || data.user_info?.message);
+  return msg ? String(msg).slice(0, 200)
+    : 'The provider did not return a list (the account may have no access to this section).';
 }
 
 // ── M3U mode ─────────────────────────────────────────────────────────────────
@@ -553,21 +586,33 @@ function enterDashboard() {
 }
 
 // ── Section navigation ───────────────────────────────────────────────────────
+// Returns a progress callback that reports how much has arrived so far, so a
+// slow multi-megabyte catalogue visibly moves instead of looking frozen.
 function showLoadingIn(el, label) {
   el.innerHTML = '';
   const d = document.createElement('div');
   d.className = 'empty';
   const spin = document.createElement('span');
   spin.className = 'spinner';
-  d.append(spin, 'Loading ' + label + '… this can take a moment for large playlists.');
+  const text = document.createElement('span');
+  text.textContent = 'Loading ' + label + '… this can take a while for large catalogues.';
+  d.append(spin, text);
   el.appendChild(d);
+  let last = 0;
+  return (bytes) => {
+    // Repaint at most every 256 KB - progress text is not worth layout churn.
+    if (bytes - last < 262144) return;
+    last = bytes;
+    text.textContent = 'Loading ' + label + '… ' + (bytes / 1048576).toFixed(1) + ' MB received.';
+  };
 }
 
-function showSectionError(el, key) {
+function showSectionError(el, key, err) {
   el.innerHTML = '';
   const d = document.createElement('div');
   d.className = 'empty';
-  d.textContent = SECTION_DEFS[key].label + ' could not be loaded. The provider may be busy or may block browser (CORS) access. ';
+  const reason = (err && err.message) ? String(err.message) : 'The provider did not respond.';
+  d.textContent = SECTION_DEFS[key].label + ' could not be loaded. ' + reason + ' ';
   const retry = document.createElement('button');
   retry.className = 'btn small';
   retry.textContent = 'Retry';
@@ -588,26 +633,29 @@ async function openSection(key) {
 
   if (!sec.loaded) {
     // Navigate immediately with a visible loading state; fetch in background.
+    let onProgress;
     if (isBrowse) {
       $('browseCats').innerHTML = '';
       $('browseMeta').textContent = '';
-      showLoadingIn($('browseList'), SECTION_DEFS[key].label);
+      onProgress = showLoadingIn($('browseList'), SECTION_DEFS[key].label);
       resetLiveInfo();
       setMobileStep('items');
       showScreen('screen-browse');
     } else {
       $('gridCats').innerHTML = '';
-      showLoadingIn($('gridItems'), SECTION_DEFS[key].label);
+      onProgress = showLoadingIn($('gridItems'), SECTION_DEFS[key].label);
       showScreen('screen-grid');
     }
+    let err = null;
     try {
-      sec = await ensureSection(key);
-    } catch {
+      sec = await ensureSection(key, onProgress);
+    } catch (e) {
+      err = e;
       sec = null;
     }
     if (state.section !== key) return; // user navigated away meanwhile
     if (!sec || !sec.loaded || !sec.items) {
-      showSectionError(isBrowse ? $('browseList') : $('gridItems'), key);
+      showSectionError(isBrowse ? $('browseList') : $('gridItems'), key, err);
       return;
     }
   }
@@ -1054,12 +1102,18 @@ async function openSeriesDetail(it) {
             vodTitle: it.name + ' - S' + s + 'E' + (ep.episode_num ?? '?'),
           })),
         }));
-    } catch {
+    } catch (e) {
+      if (state.detail !== it) return;
       list.innerHTML = '';
       const err = document.createElement('p');
       err.className = 'muted';
-      err.textContent = 'Episodes could not be loaded from the provider.';
-      list.appendChild(err);
+      err.textContent = 'Episodes could not be loaded. ' +
+        (e && e.message ? e.message : 'The provider did not respond.');
+      const retry = document.createElement('button');
+      retry.className = 'btn small';
+      retry.textContent = 'Retry';
+      retry.onclick = () => openSeriesDetail(it);
+      list.append(err, retry);
       return;
     }
     if (state.detail !== it) return; // user navigated away meanwhile
