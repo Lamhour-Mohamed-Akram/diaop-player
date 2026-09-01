@@ -248,7 +248,6 @@ const Player = (() => {
   }
 
   async function trySingleStream() {
-    if (LITE_UA) return 'fail'; // consoles/TVs cannot run this pipeline
     if (!current || current.viaSS || current.viaHelper) return false;
     const me = current;
     current.viaSS = true;
@@ -790,7 +789,10 @@ const Player = (() => {
         // the ranged engine cannot run, but the single-connection pipeline
         // works through ManagedMediaSource): go straight to single-connection.
         const iosOnlyMMS = !window.MediaSource && !!window.ManagedMediaSource;
-        if ((singleStreamForced() || pvPanelBlocked || iosOnlyMMS) && !current.viaSS) {
+        // Console/TV browsers skip the ranged engine (two connections, more
+        // memory) but DO get the single-connection pipeline: one request,
+        // pure-JS remux - their only path for panels without VOD-HLS.
+        if ((singleStreamForced() || pvPanelBlocked || iosOnlyMMS || LITE_UA) && !current.viaSS) {
           if (await singleStreamChain()) return;
           if (singleStreamForced()) {
             setStatus('Single-connection mode could not start this stream.', true);

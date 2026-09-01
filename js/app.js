@@ -1170,10 +1170,84 @@ async function quickOpenCategory(key, name, catIds) {
   renderGridItems();
 }
 
+// ── LITE global search: scan categories, keep only the matches ──────────────
+// Memory-constrained browsers never hold the full catalogue, so searching
+// "all" walks the categories with small per-category requests and keeps only
+// the hits - results stream in as they are found. A cap protects the tiny
+// memory budget from absurdly broad queries.
+const LITE_SEARCH_MAX = 400;
+let liteSearchSeq = 0;
+async function liteSearchAll(key, q) {
+  const sec = state.sections[key];
+  if (!sec || !sec.catMap || state.mode !== 'xtream') return;
+  const my = ++liteSearchSeq;
+  const box = $('gridItems');
+  box.innerHTML = '';
+  const prog = document.createElement('div');
+  prog.className = 'empty';
+  const spin = document.createElement('span');
+  spin.className = 'spinner';
+  const txt = document.createElement('span');
+  prog.append(spin, txt);
+  box.appendChild(prog);
+
+  const ids = [...sec.catMap.keys()];
+  const needle = q.toLowerCase();
+  const action = key === 'movies' ? 'get_vod_streams' : 'get_series';
+  const seen = new Set();
+  let found = 0;
+  let done = 0;
+  const stale = () => my !== liteSearchSeq || state.section !== key ||
+    state.screen !== 'screen-grid' || sec.loaded ||
+    state.search.trim().toLowerCase() !== needle;
+  txt.textContent = 'Searching ' + fmt(ids.length) + ' categories…';
+
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= ids.length || stale() || found >= LITE_SEARCH_MAX) return;
+      try {
+        const part = await Xtream.call(state.creds, action, { category_id: ids[i] });
+        if (stale()) return;
+        if (Array.isArray(part)) {
+          for (const s of part) {
+            if (found >= LITE_SEARCH_MAX) break;
+            if (!String(s.name || '').toLowerCase().includes(needle)) continue;
+            const uid = String(s.stream_id ?? s.series_id ?? '');
+            if (uid && seen.has(uid)) continue;
+            if (uid) seen.add(uid);
+            const row = s.category_id ? s : { ...s, category_id: ids[i] };
+            found++;
+            box.appendChild(gridCard(key === 'movies' ? mapMovieItem(row, sec) : mapSeriesItem(row, sec)));
+          }
+        }
+      } catch { /* keep scanning the rest */ }
+      done++;
+      txt.textContent = 'Searching… ' + done + ' of ' + ids.length +
+        ' categories, ' + fmt(found) + ' found.';
+    }
+  };
+  await Promise.all([worker(), worker()]);
+  if (stale()) return;
+  spin.remove();
+  txt.textContent = found
+    ? fmt(found) + ' result' + (found === 1 ? '' : 's') + ' for "' + q + '"' +
+      (found >= LITE_SEARCH_MAX ? ' (showing the first ' + LITE_SEARCH_MAX + ' - refine the search)' : '') + '.'
+    : 'No results for "' + q + '".';
+}
+
 // ── Grid screen (Movies / Series) ────────────────────────────────────────────
 function renderGridItems() {
+  liteSearchSeq++; // any re-render cancels a running lite search scan
   const sec = state.sections[state.section];
   if (sec && !sec.loaded) {
+    // Searching without the full list (LITE): scan all categories globally.
+    const query = state.search.trim();
+    if (query.length >= 2 && !sectionLoads.has(state.section)) {
+      liteSearchAll(state.section, query);
+      return;
+    }
     // Full list still downloading. "All" has nothing to show yet - keep the
     // download progress on screen; a category renders from the quick cache.
     if (!state.category.startsWith('g:')) {
