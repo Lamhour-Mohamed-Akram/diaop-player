@@ -450,17 +450,49 @@ const SECTION_IDLE_MS = 90000;
 // concurrent API requests fail both when that happens.
 const sectionLoads = new Map();
 
+// Progress goes through this registry so whichever UI is currently watching
+// receives it: a download started silently in the background keeps reporting
+// into the loading screen the moment the user opens that section.
+const sectionReporters = new Map(); // key -> { bytes, status }
+function reporterFor(key) {
+  return {
+    bytes: (n) => { const r = sectionReporters.get(key); if (r) r.bytes(n); },
+    status: (m) => { const r = sectionReporters.get(key); if (r) r.status(m); },
+  };
+}
+
 // Lazily fetch Xtream section contents on first open (M3U sections are always
 // already loaded).
-function ensureSection(key, report) {
+function ensureSection(key) {
   const sec = state.sections[key];
   if (!sec || sec.loaded) return Promise.resolve(sec);
   let p = sectionLoads.get(key);
   if (!p) {
-    p = loadSection(key, sec, report).finally(() => sectionLoads.delete(key));
+    p = loadSection(key, sec, reporterFor(key)).finally(() => sectionLoads.delete(key));
     sectionLoads.set(key, p);
   }
   return p;
+}
+
+// Preload Movies and Series in the background as soon as the dashboard
+// appears, so opening them later is as instant as Live TV (whose list is
+// fetched during connect). Sequential on purpose: two multi-megabyte dumps at
+// once trip providers that cap concurrent API requests.
+function prefetchHeavySections() {
+  if (state.mode !== 'xtream') return;
+  (async () => {
+    let loadedAny = false;
+    for (const key of ['movies', 'series']) {
+      const sec = state.sections[key];
+      if (!sec || sec.loaded) continue;
+      try {
+        await ensureSection(key);
+        loadedAny = true;
+      } catch { /* opening the section shows the error and offers Retry */ }
+    }
+    // Refresh the tiles ("N categories" becomes "N items") if still visible.
+    if (loadedAny && state.screen === 'screen-dashboard') enterDashboard();
+  })();
 }
 
 // Fetches a full list, falling back to one request per category when the
@@ -481,29 +513,65 @@ async function fetchList(action, sec, report) {
   const ids = sec.catMap ? [...sec.catMap.keys()] : [];
   if (!ids.length) throw firstErr;
 
+  // One request per category, three in parallel: hundreds of categories at
+  // one-at-a-time took minutes, while a small pool stays gentle on panels
+  // that throttle their API.
+  const parts = new Array(ids.length);
+  let next = 0, done = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= ids.length) return;
+      try {
+        const part = await Xtream.call(state.creds, action, { category_id: ids[i] },
+          { idleMs: SECTION_IDLE_MS });
+        if (Array.isArray(part)) parts[i] = part;
+      } catch { /* one bad category must not lose the rest */ }
+      done++;
+      report.status('The provider\'s full list failed - loading category ' +
+        done + ' of ' + ids.length + '…');
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+
   const seen = new Set();
   const out = [];
   let ok = 0;
   for (let i = 0; i < ids.length; i++) {
-    report.status('The provider\'s full list failed - loading category ' +
-      (i + 1) + ' of ' + ids.length + '…');
-    try {
-      const part = await Xtream.call(state.creds, action, { category_id: ids[i] },
-        { idleMs: SECTION_IDLE_MS });
-      if (!Array.isArray(part)) continue;
-      ok++;
-      for (const s of part) {
-        const uid = String(s.stream_id ?? s.series_id ?? '');
-        if (uid && seen.has(uid)) continue;
-        if (uid) seen.add(uid);
-        // Some panels omit category_id in per-category responses.
-        out.push(s.category_id ? s : { ...s, category_id: ids[i] });
-      }
-    } catch { /* one bad category must not lose the rest */ }
+    if (!parts[i]) continue;
+    ok++;
+    for (const s of parts[i]) {
+      const uid = String(s.stream_id ?? s.series_id ?? '');
+      if (uid && seen.has(uid)) continue;
+      if (uid) seen.add(uid);
+      // Some panels omit category_id in per-category responses.
+      out.push(s.category_id ? s : { ...s, category_id: ids[i] });
+    }
   }
   if (!ok) throw firstErr;
   return out;
 }
+
+// Raw provider rows -> app items. Shared by the full-list load and the quick
+// per-category fetch, so both produce identical objects.
+const mapMovieItem = (s, sec) => ({
+  id: 'M' + s.stream_id,
+  streamId: s.stream_id,
+  name: String(s.name || 'Unknown'),
+  logo: s.stream_icon || '',
+  group: sec.catMap.get(String(s.category_id)) || 'Uncategorized',
+  url: Xtream.movieUrl(state.creds, s.stream_id, s.container_extension),
+  meta: { year: s.year || '', rating: s.rating || '' },
+});
+const mapSeriesItem = (s, sec) => ({
+  id: 'S' + s.series_id,
+  kind: 'series',
+  seriesId: s.series_id,
+  name: String(s.name || 'Unknown'),
+  logo: s.cover || '',
+  group: sec.catMap.get(String(s.category_id)) || 'Uncategorized',
+  meta: { year: s.releaseDate || s.release_date || '', rating: s.rating || '', plot: s.plot || '' },
+});
 
 async function loadSection(key, sec, report) {
   const opts = { idleMs: SECTION_IDLE_MS, onProgress: report.bytes };
@@ -515,29 +583,14 @@ async function loadSection(key, sec, report) {
     if (radio.length && !state.sections.radio) state.sections.radio = makeSection(radio, null);
   } else if (key === 'movies') {
     const data = await fetchList('get_vod_streams', sec, report);
-    const items = data.map(s => ({
-      id: 'M' + s.stream_id,
-      streamId: s.stream_id,
-      name: String(s.name || 'Unknown'),
-      logo: s.stream_icon || '',
-      group: sec.catMap.get(String(s.category_id)) || 'Uncategorized',
-      url: Xtream.movieUrl(state.creds, s.stream_id, s.container_extension),
-      meta: { year: s.year || '', rating: s.rating || '' },
-    }));
-    Object.assign(sec, makeSection(items, sec.catMap));
+    Object.assign(sec, makeSection(data.map(s => mapMovieItem(s, sec)), sec.catMap));
   } else if (key === 'series') {
     const data = await fetchList('get_series', sec, report);
-    const items = data.map(s => ({
-      id: 'S' + s.series_id,
-      kind: 'series',
-      seriesId: s.series_id,
-      name: String(s.name || 'Unknown'),
-      logo: s.cover || '',
-      group: sec.catMap.get(String(s.category_id)) || 'Uncategorized',
-      meta: { year: s.releaseDate || s.release_date || '', rating: s.rating || '', plot: s.plot || '' },
-    }));
-    Object.assign(sec, makeSection(items, sec.catMap));
+    Object.assign(sec, makeSection(data.map(s => mapSeriesItem(s, sec)), sec.catMap));
   }
+  // The per-category quick cache is superseded by the full list.
+  delete sec.quick;
+  delete sec.quickLoading;
   // Keep lazily loaded sections across reloads too. Deferred: cloning a large
   // catalogue into IndexedDB blocks the main thread, and the list should paint
   // first.
@@ -623,6 +676,8 @@ function enterDashboard() {
   }
 
   showScreen('screen-dashboard');
+  prefetchHeavySections();
+  Player.warmup(); // playback engine + ffmpeg assets, so first Play is fast
 }
 
 // ── Section navigation ───────────────────────────────────────────────────────
@@ -685,20 +740,32 @@ async function openSection(key) {
       setMobileStep('items');
       showScreen('screen-browse');
     } else {
-      $('gridCats').innerHTML = '';
+      // The category names are already known (fetched at connect): show them
+      // right away so a single category can be browsed instantly while the
+      // full multi-megabyte list downloads.
+      renderPendingCats($('gridCats'), key);
       report = showLoadingIn($('gridItems'), SECTION_DEFS[key].label);
+      report.status('Loading ' + SECTION_DEFS[key].label +
+        '… meanwhile you can open any category on the left right away.');
       showScreen('screen-grid');
     }
+    sectionReporters.set(key, report);
     let err = null;
     try {
-      sec = await ensureSection(key, report);
+      sec = await ensureSection(key);
     } catch (e) {
       err = e;
       sec = null;
     }
     if (state.section !== key) return; // user navigated away meanwhile
     if (!sec || !sec.loaded || !sec.items) {
-      showSectionError(isBrowse ? $('browseList') : $('gridItems'), key, err);
+      // A quick category view may be on screen - replace only the loading state.
+      if (isBrowse || state.category === 'all') {
+        showSectionError(isBrowse ? $('browseList') : $('gridItems'), key, err);
+      } else {
+        toast('The full ' + SECTION_DEFS[key].label +
+          ' list could not be loaded - categories still open one by one.', 'error', 6000);
+      }
       return;
     }
   }
@@ -976,8 +1043,136 @@ function setMobileStep(step) {
   $('screen-browse').dataset.step = step;
 }
 
+// ── Instant category browsing while the full list downloads ─────────────────
+// Movies/Series category names arrive at connect time, so the rail renders
+// before the multi-megabyte item list exists. Clicking a category fetches
+// just that category (a small, fast request) and shows it immediately; the
+// full list keeps downloading in the background and takes over when ready.
+function renderPendingCats(container, key) {
+  const sec = state.sections[key];
+  container.innerHTML = '';
+  const idsByName = new Map(); // display name -> [category ids]
+  for (const [id, name] of sec.catMap) {
+    if (!idsByName.has(name)) idsByName.set(name, []);
+    idsByName.get(name).push(id);
+  }
+
+  const allLabel = key === 'movies' ? 'All Movies' : 'All Series';
+  const pick = (id) => {
+    state.category = id;
+    if (id === 'all') renderGridItems(); // reattaches the download progress
+    else quickOpenCategory(key, id.slice(2), idsByName.get(id.slice(2)) || []);
+  };
+  const activate = (btn) => {
+    container.querySelectorAll('.cat').forEach(x => x.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    const cs = container.querySelector('.cat-select');
+    if (cs) cs.value = state.category;
+  };
+
+  const frag = document.createDocumentFragment();
+  const mk = (id, name) => {
+    const b = document.createElement('button');
+    b.className = 'cat' + (state.category === id ? ' active' : '');
+    const n = document.createElement('span'); n.className = 'cat-name'; n.textContent = name;
+    const c = document.createElement('span'); c.className = 'cat-count'; c.textContent = '…';
+    b.append(n, c);
+    b.onclick = () => { pick(id); activate(b); };
+    frag.appendChild(b);
+  };
+  mk('all', allLabel);
+  for (const name of idsByName.keys()) mk('g:' + name, name);
+  container.appendChild(frag);
+
+  // Same phone-friendly dropdown as the loaded rail.
+  const sel = document.createElement('select');
+  sel.className = 'cat-select';
+  const opt = (id, name) => {
+    const o = document.createElement('option');
+    o.value = id;
+    o.textContent = name;
+    sel.appendChild(o);
+  };
+  opt('all', allLabel);
+  for (const name of idsByName.keys()) opt('g:' + name, name);
+  sel.value = state.category;
+  sel.onchange = () => { pick(sel.value); activate(null); };
+  container.prepend(sel);
+}
+
+async function quickOpenCategory(key, name, catIds) {
+  const sec = state.sections[key];
+  if (!sec || sec.loaded) { renderGridItems(); return; }
+  sec.quick = sec.quick || new Map();
+  if (sec.quick.has(name)) { renderGridItems(); return; }
+  sec.quickLoading = sec.quickLoading || new Set();
+  if (sec.quickLoading.has(name)) return; // in flight - renders on arrival
+  sec.quickLoading.add(name);
+
+  const grid = $('gridItems');
+  grid.innerHTML = '';
+  const d = document.createElement('div');
+  d.className = 'empty';
+  const spin = document.createElement('span');
+  spin.className = 'spinner';
+  d.append(spin, 'Loading ' + name + '…');
+  grid.appendChild(d);
+
+  const action = key === 'movies' ? 'get_vod_streams' : 'get_series';
+  const rows = [];
+  let err = null;
+  try {
+    for (const id of catIds) {
+      const part = await Xtream.call(state.creds, action, { category_id: id });
+      if (Array.isArray(part)) {
+        // Some panels omit category_id in per-category responses.
+        for (const s of part) rows.push(s.category_id ? s : { ...s, category_id: id });
+      }
+    }
+  } catch (e) {
+    err = e;
+  } finally {
+    sec.quickLoading.delete(name);
+  }
+
+  if (rows.length || !err) {
+    sec.quick.set(name, rows.map(s => key === 'movies' ? mapMovieItem(s, sec) : mapSeriesItem(s, sec)));
+  }
+  if (state.section !== key || state.category !== 'g:' + name) return;
+  if (!sec.loaded && err && !rows.length) {
+    grid.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'empty';
+    box.textContent = 'This category could not be loaded. ' + (err.message || '') + ' ';
+    const retry = document.createElement('button');
+    retry.className = 'btn small';
+    retry.textContent = 'Retry';
+    retry.onclick = () => quickOpenCategory(key, name, catIds);
+    box.append(document.createElement('br'), retry);
+    grid.appendChild(box);
+    return;
+  }
+  renderGridItems();
+}
+
 // ── Grid screen (Movies / Series) ────────────────────────────────────────────
 function renderGridItems() {
+  const sec = state.sections[state.section];
+  if (sec && !sec.loaded) {
+    // Full list still downloading. "All" has nothing to show yet - keep the
+    // download progress on screen; a category renders from the quick cache.
+    if (!state.category.startsWith('g:')) {
+      sectionReporters.set(state.section,
+        showLoadingIn($('gridItems'), SECTION_DEFS[state.section].label));
+      return;
+    }
+    const name = state.category.slice(2);
+    let list = (sec.quick && sec.quick.get(name)) || [];
+    const q = state.search.toLowerCase();
+    if (q) list = list.filter(i => i.name.toLowerCase().includes(q) || i.group.toLowerCase().includes(q));
+    pagedRender($('gridItems'), list, gridCard, GRID_PAGE_SIZE);
+    return;
+  }
   const items = filteredItems();
   pagedRender($('gridItems'), items, gridCard, GRID_PAGE_SIZE);
 }
@@ -1068,6 +1263,7 @@ function renderExtraInfo(container, info, fallbackPlot) {
 }
 
 async function openMovieDetail(it) {
+  Player.warmup(); // no-op if already warmed
   state.detail = it;
   const body = $('detailBody');
   body.innerHTML = '';

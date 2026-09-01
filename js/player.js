@@ -181,13 +181,79 @@ const Player = (() => {
     }
   }
 
+  // ── Background warm-up of the heavy playback assets ────────────────────────
+  // The first Play of a movie used to pay for megabytes of same-origin
+  // downloads before a single byte of the film: the engine module (~0.7 MB),
+  // its workers (~0.3 MB), and the ffmpeg audio core (~1.9 MB wasm). Fetching
+  // them while the user is still browsing puts them in the HTTP cache and
+  // pre-compiles the module, so Play goes straight to the movie. The provider
+  // is NEVER contacted here - only this app's own assets are touched.
+  let warmed = false;
+  function warmup() {
+    if (warmed) return;
+    warmed = true;
+    const idle = window.requestIdleCallback
+      ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
+      : (fn) => setTimeout(fn, 1000);
+    idle(() => {
+      if (window.MediaSource) loadPlaysVideoLib();
+      // The sequential pipeline is only warmed when it is the known next step
+      // (strict panel, dev-forced, or iPhone Safari without MediaSource).
+      if (!window.MediaSource || pvPanelBlocked || singleStreamForced()) {
+        import(SS_SRC).catch(() => { /* warmed on demand instead */ });
+      }
+      const urls = [
+        // Workers resolve with the same ?v= as the engine module.
+        new URL('js/pv/worker.js?v=' + ASSET_V, document.baseURI).href,
+        new URL('js/pv/transcode-worker.js?v=' + ASSET_V, document.baseURI).href,
+        // ffmpeg core is resolved by the worker without a query string.
+        new URL('js/vendor/ffmpeg-core-audio/ffmpeg-core.js', document.baseURI).href,
+        new URL('js/vendor/ffmpeg-core-audio/ffmpeg-core.wasm', document.baseURI).href,
+      ];
+      for (const u of urls) {
+        // Read the body fully so the cache entry is actually written.
+        fetch(u).then(r => (r.ok ? r.arrayBuffer() : null)).catch(() => { /* best effort */ });
+      }
+    });
+  }
+
+  // After a ranged-engine handoff the provider still counts the engine's
+  // just-closed connection for a few seconds; opening the next stream
+  // immediately only collects 458s (and some panels RESET the linger timer on
+  // every refused attempt). Poll the API - which costs no stream slot - until
+  // it reports the slot free, with a hard budget so an unresponsive or
+  // slot-less panel never blocks the pipeline.
+  async function waitForFreeSlot(maxMs) {
+    if (!slotCheckFn) {
+      await new Promise(r => setTimeout(r, 2500));
+      return;
+    }
+    const deadline = Date.now() + maxMs;
+    for (;;) {
+      try {
+        const s = await slotCheckFn();
+        if (!s || s.active < s.max) return;
+      } catch { return; /* API hiccup - do not stall the pipeline */ }
+      if (Date.now() >= deadline) return;
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  }
+
   async function trySingleStream() {
     if (!current || current.viaSS || current.viaHelper) return false;
     const me = current;
     current.viaSS = true;
     setStatus('Single-connection mode: streaming the file through one open request…');
     try {
-      const mod = await import(SS_SRC);
+      // Fetch the module while (possibly) waiting out the provider's linger.
+      const modPromise = import(SS_SRC);
+      if (me.viaPV) {
+        setStatus('Switching to single-connection mode - waiting for the provider to release the previous connection…');
+        await waitForFreeSlot(12000);
+        if (current !== me) return false;
+        setStatus('Single-connection mode: streaming the file through one open request…');
+      }
+      const mod = await modPromise;
       if (current !== me) return false;
       destroyPvEngine();
       if (hls) { hls.destroy(); hls = null; }
@@ -370,6 +436,19 @@ const Player = (() => {
     return true;
   }
 
+  // The panel-HLS-FIRST attempt did not work out (no remux support, broken
+  // manifest, or undecodable audio): continue with the direct file through
+  // the engine pipelines, exactly as before that attempt existed.
+  function fallBackFromVodHls(msg) {
+    if (!current || !current.vodHlsFirst) return false;
+    current.vodHlsFirst = false;
+    current.url = current.originalUrl;
+    if (hls) { hls.destroy(); hls = null; }
+    setStatus(msg || 'The provider has no instant (HLS) version of this title - preparing the file for browser playback…');
+    retryTimer = setTimeout(() => { if (current) begin(); }, 200);
+    return true;
+  }
+
   // Xtream panels can usually serve the same VOD file remuxed as HLS by
   // requesting …/movie/u/p/id.m3u8 instead of id.mkv. When direct playback of
   // a VOD file fails, try that once before giving up.
@@ -540,6 +619,8 @@ const Player = (() => {
           // Fix it without interrupting playback when the stream offers a
           // rendition this browser can decode.
           if (switchToPlayableAudioTrack()) return;
+          // Silent panel-HLS attempt: the converting player restores sound.
+          if (fallBackFromVodHls('No sound in the provider\'s HLS version (Dolby audio) - switching to the converting player…')) return;
           // Silent playback (usually Dolby AC-3): reroute through the local
           // audio helper automatically when it is running.
           if (!current.viaHelper && await tryHelperReroute()) return;
@@ -563,6 +644,10 @@ const Player = (() => {
       if (code !== 3) status = await probeStatus(url);
       if (current !== my) return; // user switched streams while probing
       if ((status === 458 || status === 509) && scheduleBusyRetry()) return;
+      // Native playback of the panel-HLS-first attempt failed (e.g. Safari,
+      // or the panel answered the .m3u8 with something unplayable): fall back
+      // to the direct file before interpreting any status as fatal.
+      if (fallBackFromVodHls()) return;
       if (status === 458 || status === 509 || status === 401 || status === 403 || status === 404) {
         fail(false, status);
         return;
@@ -618,7 +703,12 @@ const Player = (() => {
           // Prefer swapping to a rendition the browser can decode - that keeps
           // the picture running. Only fall back to the helper (a full reload)
           // when the stream offers no such rendition.
-          if (!switchToPlayableAudioTrack()) tryHelperReroute();
+          if (!switchToPlayableAudioTrack()) {
+            // Dolby audio in the panel's HLS remux: the converting player
+            // restores the sound (it transcodes the audio to AAC).
+            if (fallBackFromVodHls('The provider\'s HLS version has Dolby audio this browser cannot decode - switching to the converting player…')) return;
+            tryHelperReroute();
+          }
         }
       });
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -636,6 +726,9 @@ const Player = (() => {
         }
         const httpCode = data.response && typeof data.response.code === 'number' ? data.response.code : 0;
         if ((httpCode === 458 || httpCode === 509) && scheduleBusyRetry()) return;
+        // Any other fatal failure of the panel-HLS-first attempt: this panel
+        // does not serve a usable HLS version - use the engine pipeline.
+        if (fallBackFromVodHls()) return;
         // Unrecoverable media error: the local helper can transcode it.
         if (data.type === Hls.ErrorTypes.MEDIA_ERROR && await tryHelperReroute()) return;
         // Manifest loaded but the video segments did not: with IPTV panels this
@@ -692,6 +785,8 @@ const Player = (() => {
         if (current !== me) return;
         if ((status === 458 || status === 509) && scheduleBusyRetry()) return;
         if (status === 458 || status === 509 || status === 401 || status === 403 || status === 404) {
+          // A refused panel-HLS-first probe is not fatal - use the file itself.
+          if (status !== 458 && status !== 509 && fallBackFromVodHls()) return;
           fail(false, status);
           return;
         }
@@ -709,9 +804,24 @@ const Player = (() => {
       setStatus('This stream has an unsupported URL and was blocked.', true);
       return;
     }
-    current = { video: videoEl, statusEl: statEl, url: rawUrl, originalUrl: rawUrl, retries: RETRY_DELAYS.length, triedHlsFallback: false, viaHelper: false, viaPV: false, viaSS: false, pvRetries: 2, pvErrorHandled: false, sawAudioCodec: false, origExt: '', resumeAt: (opts && opts.resumeAt) || 0 };
+    current = { video: videoEl, statusEl: statEl, url: rawUrl, originalUrl: rawUrl, retries: RETRY_DELAYS.length, triedHlsFallback: false, vodHlsFirst: false, viaHelper: false, viaPV: false, viaSS: false, pvRetries: 2, pvErrorHandled: false, sawAudioCodec: false, origExt: '', resumeAt: (opts && opts.resumeAt) || 0 };
     const m = rawUrl.match(VOD_CONTAINER_RX);
-    if (m) current.origExt = m[1].toLowerCase();
+    if (m) {
+      current.origExt = m[1].toLowerCase();
+      // Panel-HLS FIRST for containers browsers cannot play natively: Xtream
+      // panels can usually serve the same file remuxed as HLS, which starts
+      // in seconds - like live TV - over sequential single connections, with
+      // no engine downloads, no strict-panel handoffs and no connection-limit
+      // dance. Every failure of this attempt falls straight back to the
+      // engine pipeline, so panels without VOD-HLS lose only one request.
+      const canHls = (window.Hls && Hls.isSupported()) ||
+        !!videoEl.canPlayType('application/vnd.apple.mpegurl');
+      if (canHls && /\/(movie|series)\//i.test(rawUrl)) {
+        current.vodHlsFirst = true;
+        current.triedHlsFallback = true; // this IS the HLS attempt
+        current.url = rawUrl.replace(/\.[a-z0-9]{2,4}(\?|$)/i, '.m3u8$1');
+      }
+    }
     begin();
   }
 
@@ -742,5 +852,5 @@ const Player = (() => {
 
   const currentUrl = () => (current ? current.originalUrl : '');
 
-  return { play, stop, restart, setAudioTrack, setSubtitleTrack, setTrackListener, currentUrl, setBusyInfoProvider, setSlotChecker, clearPanelStrict };
+  return { play, stop, restart, warmup, setAudioTrack, setSubtitleTrack, setTrackListener, currentUrl, setBusyInfoProvider, setSlotChecker, clearPanelStrict };
 })();
