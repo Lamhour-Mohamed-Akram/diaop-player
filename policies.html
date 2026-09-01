@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+    Diamond Operatore Player (diaop.de) - privacy-first, pure-static IPTV web player.
+    Licensed under GNU General Public License v3.0.
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy &amp; Disclaimer - Diamond Operatore Player</title>
+  <link rel="icon" type="image/png" href="icon.png">
+  <meta name="theme-color" content="#0e1013">
+  <style>
+    :root {
+      --bg: #0e1013; --surface: #16191d; --text: #e7e9eb;
+      --muted: #8b939c; --accent: #3ea6ff; --border: #262b31;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg); color: var(--text); line-height: 1.7;
+    }
+    main { max-width: 760px; margin: 0 auto; padding: 40px 20px 80px; }
+    h1 { font-size: 26px; margin-bottom: 4px; }
+    .sub { color: var(--muted); margin-bottom: 36px; }
+    h2 { font-size: 19px; margin: 36px 0 12px; }
+    p, li { font-size: 15px; color: var(--text); margin-bottom: 10px; }
+    ul { padding-left: 22px; margin-bottom: 12px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 8px; padding: 18px 20px; margin: 14px 0;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .back { display: inline-block; margin-bottom: 28px; }
+    .muted { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <a class="back" href="./">&#8249; Back to the player</a>
+    <h1>💎 Diamond Operatore Player</h1>
+    <p class="sub">Privacy &amp; Disclaimer · diaop.de</p>
+
+    <h2>What this project is</h2>
+    <div class="card">
+      <p>Diamond Operatore Player is a <strong>free, independent, non-commercial media player
+      application</strong> that runs entirely in your web browser. It is a personal open-source
+      project - not a company, not a business, and not a service.</p>
+    </div>
+
+    <h2>Disclaimer</h2>
+    <div class="card">
+      <ul>
+        <li>Diamond Operatore Player <strong>does not provide, host, sell, or distribute any
+        audiovisual content</strong> - no IPTV subscriptions, no channels, no packages, no media
+        of any kind.</li>
+        <li>The application is a player only: <strong>users are required to supply their own
+        content</strong> (their own playlist URL from a source they have the right to use).
+        Everything the player shows comes exclusively from the address the user enters.</li>
+        <li>We maintain <strong>no connection or affiliation with any IPTV provider</strong> or
+        any third-party content service. Names of providers or services appearing inside the
+        player come from the user's own playlist data.</li>
+        <li>We <strong>do not sell anything</strong>. There are no subscriptions, no payments, no
+        accounts, and no "activation" of any kind. Anyone asking for payment in the name of this
+        project is not us.</li>
+        <li>If any website replicates this application or uses its name to market or sell IPTV
+        subscriptions or packages: <strong>such sites are not affiliated with this project</strong>,
+        and we do not endorse or recognize any transaction made through them.</li>
+        <li>Users are solely responsible for the legality of the content sources they choose to
+        use with this player in their jurisdiction.</li>
+      </ul>
+    </div>
+
+    <h2>Privacy</h2>
+    <div class="card">
+      <ul>
+        <li><strong>No accounts, no analytics, no tracking, no cookies, no telemetry.</strong>
+        The site never sends your data anywhere.</li>
+        <li>Your playlist URL and its parsed contents are processed entirely in your browser.
+        Network requests go <strong>only to the provider address you yourself entered</strong>
+        (plus one public CDN for the video-player library).</li>
+        <li>For convenience, the following is stored <strong>locally in your browser only</strong>:
+        your playlist URL, a cached copy of the parsed playlist (so reloads are instant), and a
+        small compatibility flag for your provider. Pressing <strong>Change Playlist</strong>
+        erases all of it.</li>
+        <li>Playlist URLs may contain credentials; the application never logs them and never
+        transmits them to anyone except your own provider.</li>
+      </ul>
+    </div>
+
+    <h2>Software license</h2>
+    <div class="card">
+      <p>This application is free software under the
+      <a href="https://www.gnu.org/licenses/gpl-3.0.html">GNU GPL v3.0</a> - source code at
+      <a href="https://github.com/Lamhour-Mohamed-Akram/diaop-player">github.com/Lamhour-Mohamed-Akram/diaop-player</a>. It bundles the
+      following open-source components: the MIT-licensed
+      <a href="https://github.com/kzahel/playsvideo">playsvideo</a> engine, Mediabunny,
+      <a href="https://github.com/video-dev/hls.js">hls.js</a> (Apache-2.0) and an
+      ffmpeg-based WebAssembly audio decoder (LGPL). It is provided "as is",
+      without warranty of any kind.</p>
+    </div>
+
+    <p class="muted">Last updated: September 2026</p>
+  </main>
+</body>
+</html>

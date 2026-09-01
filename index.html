@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--
+    Diamond Operatore Player (diaop.de) - privacy-first, pure-static IPTV web player.
+    Licensed under the GNU General Public License v3.0
+    https://www.gnu.org/licenses/gpl-3.0.html
+
+    No backend and no accounts. The playlist URL (localStorage) and the parsed
+    playlist data (IndexedDB) are kept in this browser only, so a reload
+    restores the session instantly; "Change Playlist" wipes both.
+-->
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diamond Operatore Player</title>
+  <meta name="description" content="Free privacy-first IPTV web player. Paste your playlist URL and watch Live TV, Movies and Series right in the browser - nothing is uploaded or stored anywhere.">
+  <meta name="theme-color" content="#0e1013">
+  <link rel="icon" type="image/png" href="icon.png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Diamond Operatore Player">
+  <meta property="og:title" content="Diamond Operatore Player">
+  <meta property="og:description" content="Free privacy-first IPTV web player. Your playlist, your browser, nothing else - no accounts, no tracking, no servers.">
+  <meta property="og:url" content="https://diaop.netlify.app/">
+  <meta property="og:image" content="https://diaop.netlify.app/og-image.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="css/styles.css?v=45">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.7/hls.min.js" defer></script>
+  <script src="js/playlist.js?v=45" defer></script>
+  <script src="js/xtream.js?v=45" defer></script>
+  <script src="js/player.js?v=45" defer></script>
+  <script src="js/app.js?v=45" defer></script>
+</head>
+<body>
+
+  <header id="topbar" hidden>
+    <button id="btnBack" class="tbtn" title="Back">‹ Back</button>
+    <button id="btnHome" class="brand" title="Home">💎 DiaOP</button>
+    <span id="topTitle" class="top-title"></span>
+    <div id="searchWrap" class="search-wrap" hidden>
+      <input id="searchInput" type="search" placeholder="Search…" autocomplete="off" spellcheck="false">
+    </div>
+    <button id="btnChange" class="tbtn danger">Change Playlist</button>
+  </header>
+
+  <main id="screens">
+
+    <!-- 1 · Connection screen -->
+    <section id="screen-connect" class="screen active">
+      <div class="connect-box">
+        <div class="connect-logo">💎</div>
+        <h1>Diamond Operatore Player</h1>
+        <p class="muted">Paste your IPTV playlist URL</p>
+        <form id="connectForm">
+          <input id="urlInput" type="url" placeholder="https://example.com/get.php?username=…&amp;password=…&amp;type=m3u_plus"
+                 autocomplete="off" spellcheck="false" required>
+          <button id="loadBtn" type="submit" class="btn accent">Load Playlist</button>
+        </form>
+        <div id="connectStatus" class="connect-status" hidden></div>
+        <p class="hint muted">
+          Supports M3U playlists, Xtream URLs and direct M3U8 streams.<br>
+          The URL is remembered in this browser only, until you press Change Playlist.
+        </p>
+        <p class="hint muted footer-links">
+          <a href="policies.html">Privacy &amp; Disclaimer</a> ·
+          <a href="https://github.com/Lamhour-Mohamed-Akram/diaop-player" rel="noopener">GitHub</a> · diaop.de
+        </p>
+      </div>
+    </section>
+
+    <!-- 2 · Home dashboard -->
+    <section id="screen-dashboard" class="screen">
+      <div class="dash">
+        <p id="dashInfo" class="muted"></p>
+        <div id="dashTiles" class="dash-tiles"></div>
+        <div id="dashRefresh" class="dash-refresh"></div>
+      </div>
+    </section>
+
+    <!-- 3 · Browse: Live TV / Radio (categories | items | player) -->
+    <section id="screen-browse" class="screen" data-step="cats">
+      <aside id="browseCats" class="pane pane-cats"></aside>
+      <div class="pane pane-items">
+        <div id="browseMeta" class="pane-meta"></div>
+        <div id="browseList" class="item-list"></div>
+      </div>
+      <div class="pane pane-player">
+        <div class="video-wrap">
+          <video id="liveVideo" controls playsinline></video>
+          <div id="liveStatus" class="video-status" hidden></div>
+        </div>
+        <div class="player-bar">
+          <button id="btnLiveStop" class="tbtn" title="Stop playback and any retries">■ Stop</button>
+          <button id="btnLiveRestart" class="tbtn" title="Reload this stream and start over">⟳ Restart stream</button>
+          <button id="btnLiveCopy" class="tbtn" title="Copy the stream URL to open in VLC/IINA">⧉ Copy link</button>
+          <select id="liveAudioSel" class="track-select" title="Audio track" hidden></select>
+          <select id="liveSubSel" class="track-select" title="Subtitles" hidden></select>
+        </div>
+        <div id="liveInfo" class="info-panel"></div>
+      </div>
+    </section>
+
+    <!-- 4 · Grid: Movies / Series -->
+    <section id="screen-grid" class="screen">
+      <aside id="gridCats" class="pane pane-cats"></aside>
+      <div id="gridItems" class="pane pane-grid"></div>
+    </section>
+
+    <!-- 5 · Detail: movie info / series seasons & episodes -->
+    <section id="screen-detail" class="screen">
+      <div id="detailBody" class="detail"></div>
+    </section>
+
+    <!-- 6 · VOD / direct-stream player -->
+    <section id="screen-player" class="screen">
+      <div class="vod-wrap">
+        <div class="video-wrap big">
+          <video id="vodVideo" controls playsinline></video>
+          <div id="vodStatus" class="video-status" hidden></div>
+        </div>
+        <div class="vod-title-row">
+          <div>
+            <h2 id="vodTitle"></h2>
+            <p id="vodSub" class="muted"></p>
+          </div>
+          <div class="vod-controls">
+            <select id="vodAudioSel" class="track-select" title="Audio track" hidden></select>
+            <select id="vodSubSel" class="track-select" title="Subtitles" hidden></select>
+            <button id="btnVodStop" class="tbtn" title="Stop playback and any retries">■ Stop</button>
+            <button id="btnVodRestart" class="tbtn" title="Reload this stream and start over">⟳ Restart stream</button>
+            <button id="btnVodCopy" class="tbtn" title="Copy the stream URL to open in VLC/IINA">⧉ Copy link</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <div id="toasts"></div>
+
+</body>
+</html>
