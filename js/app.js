@@ -47,10 +47,14 @@ const isMobile = () => window.matchMedia('(max-width: 800px)').matches;
 // Guarded with try/catch for private-browsing modes that block storage.
 const STORAGE_KEY = 'browplayer_url';
 
-// The same app served over plain HTTP (GitHub Pages + diaop.de, HTTPS not
-// enforced). HTTP-only providers cannot be used from an HTTPS page (mixed
-// content), so the HTTPS site hops here automatically - zero user action.
-const HTTP_MIRROR = 'http://diaop.de/';
+// The same app served over plain HTTP, on a dedicated subdomain that can
+// NEVER have https: a CAA DNS record forbids all certificate authorities
+// from issuing for it. This matters because modern browsers silently upgrade
+// http:// navigations to https:// when an https version exists - with no
+// https possible, the upgrade fails and the browser falls back to plain
+// http, which is exactly what HTTP-only IPTV providers need (mixed content).
+// The HTTPS site hops here automatically - zero user action.
+const HTTP_MIRROR = 'http://watch.diaop.de/';
 function saveUrl(url) { try { localStorage.setItem(STORAGE_KEY, url); } catch { /* storage blocked */ } }
 function clearSavedUrl() { try { localStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ } }
 function savedUrl() { try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; } }
@@ -210,13 +214,18 @@ async function connect(raw) {
       // never asks anyone to install or run anything.
       if (/[?&]bridge=1\b/.test(location.search) && await Bridge.probe()) {
         Bridge.enable();
-      } else if (location.protocol === 'https:') {
+      } else if (location.protocol === 'https:' && location.host !== new URL(HTTP_MIRROR).host) {
         // Zero-action fallback: hop to the plain-HTTP edition of this same
         // app, carrying the playlist URL in the #fragment (fragments never
         // leave the browser, so credentials are not sent to any server).
-        // The http edition auto-connects on arrival.
+        // The http edition auto-connects on arrival. Guarded against loops:
+        // never hop when we are already on the mirror host.
         setConnectBusy(true, 'This provider needs the HTTP edition - switching…');
         location.href = HTTP_MIRROR + '#u=' + encodeURIComponent(url);
+        return;
+      } else if (location.protocol === 'https:') {
+        connectError('The browser forced this page onto HTTPS, where an http-only provider cannot load. ' +
+          'Open ' + HTTP_MIRROR + ' and load the playlist there.');
         return;
       } else {
         connectError('This provider could not be reached over plain HTTP or HTTPS. ' +
@@ -1249,21 +1258,27 @@ function init() {
 
 // On startup: restore the cached playlist instantly when possible; refetch
 // from the provider only when there is no usable cache or it is over a day old.
-async function restoreSession() {
-  // Handoff from the HTTPS edition: the playlist URL arrives in the
-  // #fragment (never sent over the network). Connect immediately and scrub
-  // it from the address bar and history.
+// Handoff from the HTTPS edition: the playlist URL arrives in the #fragment
+// (never sent over the network). Connect immediately and scrub it from the
+// address bar and history. Also bound to hashchange, because a browser that
+// rewrites the hop's scheme can turn it into a same-document navigation.
+function consumeHandoffHash() {
   const m = location.hash.match(/^#u=(.+)$/);
-  if (m) {
-    let handoff = '';
-    try { handoff = decodeURIComponent(m[1]); } catch { /* malformed */ }
-    history.replaceState(null, '', location.pathname + location.search);
-    if (handoff && /^https?:\/\//i.test(handoff)) {
-      $('urlInput').value = handoff;
-      connect(handoff);
-      return;
-    }
+  if (!m) return false;
+  let handoff = '';
+  try { handoff = decodeURIComponent(m[1]); } catch { /* malformed */ }
+  history.replaceState(null, '', location.pathname + location.search);
+  if (handoff && /^https?:\/\//i.test(handoff)) {
+    $('urlInput').value = handoff;
+    connect(handoff);
+    return true;
   }
+  return false;
+}
+window.addEventListener('hashchange', consumeHandoffHash);
+
+async function restoreSession() {
+  if (consumeHandoffHash()) return;
 
   const remembered = savedUrl();
   if (!remembered) return;
