@@ -452,19 +452,61 @@ const sectionLoads = new Map();
 
 // Lazily fetch Xtream section contents on first open (M3U sections are always
 // already loaded).
-function ensureSection(key, onProgress) {
+function ensureSection(key, report) {
   const sec = state.sections[key];
   if (!sec || sec.loaded) return Promise.resolve(sec);
   let p = sectionLoads.get(key);
   if (!p) {
-    p = loadSection(key, sec, onProgress).finally(() => sectionLoads.delete(key));
+    p = loadSection(key, sec, report).finally(() => sectionLoads.delete(key));
     sectionLoads.set(key, p);
   }
   return p;
 }
 
-async function loadSection(key, sec, onProgress) {
-  const opts = { idleMs: SECTION_IDLE_MS, onProgress };
+// Fetches a full list, falling back to one request per category when the
+// single monolithic dump fails. Big panels often cannot emit a valid
+// multi-megabyte VOD payload in one go (truncated, or with PHP notices printed
+// into it) yet answer per-category requests perfectly.
+async function fetchList(action, sec, report) {
+  const opts = { idleMs: SECTION_IDLE_MS, onProgress: report.bytes };
+  let firstErr = null;
+  try {
+    const data = await Xtream.call(state.creds, action, null, opts);
+    if (Array.isArray(data)) return data;
+    firstErr = new Error(providerListError(data));
+  } catch (err) {
+    firstErr = err;
+  }
+
+  const ids = sec.catMap ? [...sec.catMap.keys()] : [];
+  if (!ids.length) throw firstErr;
+
+  const seen = new Set();
+  const out = [];
+  let ok = 0;
+  for (let i = 0; i < ids.length; i++) {
+    report.status('The provider\'s full list failed - loading category ' +
+      (i + 1) + ' of ' + ids.length + '…');
+    try {
+      const part = await Xtream.call(state.creds, action, { category_id: ids[i] },
+        { idleMs: SECTION_IDLE_MS });
+      if (!Array.isArray(part)) continue;
+      ok++;
+      for (const s of part) {
+        const uid = String(s.stream_id ?? s.series_id ?? '');
+        if (uid && seen.has(uid)) continue;
+        if (uid) seen.add(uid);
+        // Some panels omit category_id in per-category responses.
+        out.push(s.category_id ? s : { ...s, category_id: ids[i] });
+      }
+    } catch { /* one bad category must not lose the rest */ }
+  }
+  if (!ok) throw firstErr;
+  return out;
+}
+
+async function loadSection(key, sec, report) {
+  const opts = { idleMs: SECTION_IDLE_MS, onProgress: report.bytes };
 
   if (key === 'live') {
     const data = await Xtream.call(state.creds, 'get_live_streams', null, opts);
@@ -472,9 +514,8 @@ async function loadSection(key, sec, onProgress) {
     Object.assign(sec, makeSection(live, sec.catMap));
     if (radio.length && !state.sections.radio) state.sections.radio = makeSection(radio, null);
   } else if (key === 'movies') {
-    const data = await Xtream.call(state.creds, 'get_vod_streams', null, opts);
-    if (!Array.isArray(data)) throw new Error(providerListError(data));
-    const items = (Array.isArray(data) ? data : []).map(s => ({
+    const data = await fetchList('get_vod_streams', sec, report);
+    const items = data.map(s => ({
       id: 'M' + s.stream_id,
       streamId: s.stream_id,
       name: String(s.name || 'Unknown'),
@@ -485,9 +526,8 @@ async function loadSection(key, sec, onProgress) {
     }));
     Object.assign(sec, makeSection(items, sec.catMap));
   } else if (key === 'series') {
-    const data = await Xtream.call(state.creds, 'get_series', null, opts);
-    if (!Array.isArray(data)) throw new Error(providerListError(data));
-    const items = (Array.isArray(data) ? data : []).map(s => ({
+    const data = await fetchList('get_series', sec, report);
+    const items = data.map(s => ({
       id: 'S' + s.series_id,
       kind: 'series',
       seriesId: s.series_id,
@@ -599,11 +639,14 @@ function showLoadingIn(el, label) {
   d.append(spin, text);
   el.appendChild(d);
   let last = 0;
-  return (bytes) => {
-    // Repaint at most every 256 KB - progress text is not worth layout churn.
-    if (bytes - last < 262144) return;
-    last = bytes;
-    text.textContent = 'Loading ' + label + '… ' + (bytes / 1048576).toFixed(1) + ' MB received.';
+  return {
+    bytes: (n) => {
+      // Repaint at most every 256 KB - progress text is not worth layout churn.
+      if (n - last < 262144) return;
+      last = n;
+      text.textContent = 'Loading ' + label + '… ' + (n / 1048576).toFixed(1) + ' MB received.';
+    },
+    status: (msg) => { text.textContent = msg; },
   };
 }
 
@@ -633,22 +676,22 @@ async function openSection(key) {
 
   if (!sec.loaded) {
     // Navigate immediately with a visible loading state; fetch in background.
-    let onProgress;
+    let report;
     if (isBrowse) {
       $('browseCats').innerHTML = '';
       $('browseMeta').textContent = '';
-      onProgress = showLoadingIn($('browseList'), SECTION_DEFS[key].label);
+      report = showLoadingIn($('browseList'), SECTION_DEFS[key].label);
       resetLiveInfo();
       setMobileStep('items');
       showScreen('screen-browse');
     } else {
       $('gridCats').innerHTML = '';
-      onProgress = showLoadingIn($('gridItems'), SECTION_DEFS[key].label);
+      report = showLoadingIn($('gridItems'), SECTION_DEFS[key].label);
       showScreen('screen-grid');
     }
     let err = null;
     try {
-      sec = await ensureSection(key, onProgress);
+      sec = await ensureSection(key, report);
     } catch (e) {
       err = e;
       sec = null;

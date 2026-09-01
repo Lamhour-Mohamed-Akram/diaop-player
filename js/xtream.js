@@ -26,6 +26,56 @@ const Xtream = (() => {
     return { server: u.origin + basePath, username, password };
   }
 
+  // ── Tolerant JSON parsing ──────────────────────────────────────────────────
+  // Panels routinely break their own JSON on the huge VOD/series dumps: PHP
+  // notices or HTML get printed around the payload, or the connection drops
+  // mid-array leaving it unterminated. Rather than losing the whole catalogue,
+  // salvage whatever is structurally complete.
+  function salvageJson(text) {
+    const start = text.search(/[[{]/);
+    if (start < 0) return null;
+    const body = text.slice(start);
+
+    // Junk printed after the payload (PHP warnings, HTML, stray bytes).
+    const lastClose = Math.max(body.lastIndexOf(']'), body.lastIndexOf('}'));
+    if (lastClose > 0) {
+      try { return JSON.parse(body.slice(0, lastClose + 1)); } catch { /* keep trying */ }
+    }
+
+    // Truncated array: keep every element that arrived complete and close it.
+    if (body[0] === '[') {
+      for (let cut = body.lastIndexOf('},'); cut > 0; cut = body.lastIndexOf('},', cut - 1)) {
+        try { return JSON.parse(body.slice(0, cut + 1) + ']'); } catch { /* try an earlier element */ }
+      }
+    }
+    return null;
+  }
+
+  // Turns a parse failure into something actionable: where it broke and what
+  // the payload actually looked like there.
+  function describeParseFailure(text, err) {
+    const mb = (text.length / 1048576).toFixed(1);
+    const pos = Number((/position (\d+)/.exec(err && err.message) || [])[1]);
+    let where = '';
+    if (Number.isFinite(pos)) {
+      const snippet = text.slice(Math.max(0, pos - 40), pos + 40).replace(/\s+/g, ' ');
+      where = ' Broke at byte ' + pos + ' of ' + text.length + ' near: "' + snippet + '".';
+    } else {
+      where = ' Response started with: "' + text.slice(0, 80).replace(/\s+/g, ' ') + '".';
+    }
+    return 'The provider sent ' + mb + ' MB of invalid JSON.' + where;
+  }
+
+  function parseJson(text) {
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      const salvaged = salvageJson(text);
+      if (salvaged !== null) return salvaged;
+      throw new Error(describeParseFailure(text, err));
+    }
+  }
+
   // Reads the body while reporting progress, so the caller's watchdog can tell
   // "still downloading" from "stalled". Falls back to res.text() where the
   // streaming body is unavailable.
@@ -69,11 +119,7 @@ const Xtream = (() => {
       if (!res.ok) throw new Error('The provider answered HTTP ' + res.status + '.');
       const text = await readBody(res, bump);
       if (!text.trim()) throw new Error('The provider returned an empty response.');
-      try {
-        return JSON.parse(text);
-      } catch {
-        throw new Error('The provider returned a malformed response.');
-      }
+      return parseJson(text);
     } catch (err) {
       if (err && err.name === 'AbortError') {
         throw new Error('The provider stopped responding (no data for ' +
