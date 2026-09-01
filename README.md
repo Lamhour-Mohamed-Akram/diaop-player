@@ -3,7 +3,6 @@
 A privacy-first, **pure-static** IPTV web player. Paste one IPTV URL, press Load, and browse **Live TV, Movies, Series and Radio** entirely in your browser - no backend, no accounts, no tracking.
 
 - **Live app:** [diaop.netlify.app](https://diaop.netlify.app) (also diaop.de)
-- **Source:** [github.com/Lamhour-Mohamed-Akram/diaop-player](https://github.com/Lamhour-Mohamed-Akram/diaop-player)
 - **Privacy & disclaimer:** [policies.html](policies.html)
 
 ## How it works
