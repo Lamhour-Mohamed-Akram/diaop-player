@@ -46,6 +46,11 @@ const isMobile = () => window.matchMedia('(max-width: 800px)').matches;
 // The playlist URL survives refresh until "Change Playlist" is pressed.
 // Guarded with try/catch for private-browsing modes that block storage.
 const STORAGE_KEY = 'browplayer_url';
+
+// The same app served over plain HTTP (GitHub Pages + diaop.de, HTTPS not
+// enforced). HTTP-only providers cannot be used from an HTTPS page (mixed
+// content), so the HTTPS site hops here automatically - zero user action.
+const HTTP_MIRROR = 'http://diaop.de/';
 function saveUrl(url) { try { localStorage.setItem(STORAGE_KEY, url); } catch { /* storage blocked */ } }
 function clearSavedUrl() { try { localStorage.removeItem(STORAGE_KEY); } catch { /* storage blocked */ } }
 function savedUrl() { try { return localStorage.getItem(STORAGE_KEY) || ''; } catch { return ''; } }
@@ -200,14 +205,20 @@ async function connect(raw) {
     if (upgraded) {
       url = httpsUrl;
     } else {
-      setConnectBusy(true, 'Provider is http-only - looking for the local bridge…');
+      setConnectBusy(true, 'Provider is http-only - adapting…');
       if (await Bridge.probe()) {
-        Bridge.enable();
+        Bridge.enable(); // silent local bridge, no user action needed
+      } else if (location.protocol === 'https:') {
+        // Zero-action fallback: hop to the plain-HTTP edition of this same
+        // app, carrying the playlist URL in the #fragment (fragments never
+        // leave the browser, so credentials are not sent to any server).
+        // The http edition auto-connects on arrival.
+        setConnectBusy(true, 'This provider needs the HTTP edition - switching…');
+        location.href = HTTP_MIRROR + '#u=' + encodeURIComponent(url);
+        return;
       } else {
-        connectError('This provider only works over plain HTTP, and this page is served over HTTPS - ' +
-          'the browser forbids mixing the two. The fix: run the small local bridge on this computer, ' +
-          'then press Load again. Download audio-helper.py from the GitHub page (link below) and run: ' +
-          'python3 audio-helper.py - it relays your provider through this machine only, nothing else.');
+        connectError('This provider could not be reached over plain HTTP or HTTPS. ' +
+          'It may be offline, or it may block browser access.');
         return;
       }
     }
@@ -1237,6 +1248,21 @@ function init() {
 // On startup: restore the cached playlist instantly when possible; refetch
 // from the provider only when there is no usable cache or it is over a day old.
 async function restoreSession() {
+  // Handoff from the HTTPS edition: the playlist URL arrives in the
+  // #fragment (never sent over the network). Connect immediately and scrub
+  // it from the address bar and history.
+  const m = location.hash.match(/^#u=(.+)$/);
+  if (m) {
+    let handoff = '';
+    try { handoff = decodeURIComponent(m[1]); } catch { /* malformed */ }
+    history.replaceState(null, '', location.pathname + location.search);
+    if (handoff && /^https?:\/\//i.test(handoff)) {
+      $('urlInput').value = handoff;
+      connect(handoff);
+      return;
+    }
+  }
+
   const remembered = savedUrl();
   if (!remembered) return;
   $('urlInput').value = remembered;
@@ -1247,6 +1273,13 @@ async function restoreSession() {
   // A restored session skips connect(), so arm the local bridge here too
   // when the page is https and the provider http-only.
   if (Bridge.needed(remembered) && await Bridge.probe()) Bridge.enable();
+
+  // An http-only provider cannot work from this page without the bridge -
+  // let connect() run its https-upgrade / bridge / http-edition-hop logic.
+  if (Bridge.needed(remembered) && !Bridge.isActive()) {
+    connect(remembered);
+    return;
+  }
 
   const usable = cache && cache.url === remembered && cache.sections &&
     Object.keys(cache.sections).length && (Date.now() - cache.savedAt) < CACHE_MAX_AGE_MS;

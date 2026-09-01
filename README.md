@@ -50,7 +50,7 @@ python3 -m http.server 9898
 
 It's just static files - upload the folder to Netlify, GitHub Pages, Cloudflare Pages, or any web server. No build step.
 
-> **HTTP providers ⚠️** Most IPTV providers serve over plain HTTP, and a page hosted on **HTTPS cannot load HTTP streams** (browsers forbid mixed content). The app handles this in order: it first tries the provider over https automatically; if the provider is http-only, it uses the **local bridge** below - browsers exempt `127.0.0.1` from the mixed-content rule, so the hosted HTTPS player can relay http providers through your own machine. No third party is ever involved.
+> **HTTP providers - zero user action.** Most IPTV providers serve over plain HTTP, and a page hosted on **HTTPS cannot load HTTP streams** (browsers forbid mixed content). The app resolves this automatically, in order: (1) it tries the provider over https - many panels support both; (2) if the local bridge below happens to be running, it relays through it; (3) otherwise it **hops to the plain-HTTP edition of this same app** (`http://diaop.de`, GitHub Pages with HTTPS not enforced), carrying the playlist URL in a `#fragment` that never leaves the browser, and connects there by itself. The person watching does nothing either way.
 
 ## The local helper: HTTPS bridge + audio fallback
 
