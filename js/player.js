@@ -90,6 +90,12 @@ const Player = (() => {
     if (onTracks) onTracks({ audio: [], subs: [], audioId: -1, subId: -1 });
   }
 
+  // Console/TV browsers (PS4, smart TVs): tiny memory budgets and no wasm -
+  // the converting pipelines cannot run there, so never hand a working HLS
+  // picture over to them. HLS is the one viable playback path.
+  const LITE_UA = /PlayStation|Nintendo|SMART-TV|SmartTV|Tizen|WebOS|Web0S|NetCast|Roku|CrKey|AFTB|BRAVIA/i
+    .test(navigator.userAgent);
+
   // ── Optional local audio helper (tools/audio-helper.py) ───────────────────
   // When running on the user's machine, it transcodes only the audio track to
   // AAC via ffmpeg, fixing Dolby AC-3 silence and unplayable containers.
@@ -190,7 +196,9 @@ const Player = (() => {
   // is NEVER contacted here - only this app's own assets are touched.
   let warmed = false;
   function warmup() {
-    if (warmed) return;
+    // Console/TV browsers cannot run the wasm engines anyway - do not spend
+    // megabytes warming them there.
+    if (warmed || LITE_UA) return;
     warmed = true;
     const idle = window.requestIdleCallback
       ? (fn) => requestIdleCallback(fn, { timeout: 3000 })
@@ -619,11 +627,13 @@ const Player = (() => {
           // Fix it without interrupting playback when the stream offers a
           // rendition this browser can decode.
           if (switchToPlayableAudioTrack()) return;
-          // Silent panel-HLS attempt: the converting player restores sound.
-          if (fallBackFromVodHls('No sound in the provider\'s HLS version (Dolby audio) - switching to the converting player…')) return;
-          // Silent playback (usually Dolby AC-3): reroute through the local
-          // audio helper automatically when it is running.
-          if (!current.viaHelper && await tryHelperReroute()) return;
+          if (!LITE_UA) {
+            // Silent panel-HLS attempt: the converting player restores sound.
+            if (fallBackFromVodHls('No sound in the provider\'s HLS version (Dolby audio) - switching to the converting player…')) return;
+            // Silent playback (usually Dolby AC-3): reroute through the local
+            // audio helper automatically when it is running.
+            if (!current.viaHelper && await tryHelperReroute()) return;
+          }
           const msg = (audioWarn || 'No sound: this stream uses an audio codec (usually Dolby AC-3) that this browser cannot decode.') +
             HELPER_HINT;
           setStatus(msg, false);
@@ -704,6 +714,10 @@ const Player = (() => {
           // the picture running. Only fall back to the helper (a full reload)
           // when the stream offers no such rendition.
           if (!switchToPlayableAudioTrack()) {
+            // A console/TV browser cannot run the converting player: keep the
+            // picture and let the silent-audio warning explain, rather than
+            // tearing a working stream down for nothing.
+            if (LITE_UA) return;
             // Dolby audio in the panel's HLS remux: the converting player
             // restores the sound (it transcodes the audio to AAC).
             if (fallBackFromVodHls('The provider\'s HLS version has Dolby audio this browser cannot decode - switching to the converting player…')) return;

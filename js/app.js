@@ -42,6 +42,14 @@ const state = {
 
 const isMobile = () => window.matchMedia('(max-width: 800px)').matches;
 
+// Console/TV browsers (PS4, smart TVs) have tiny per-tab memory budgets: the
+// provider's full Movies/Series dump (tens of MB of JSON) chokes or crashes
+// the tab there, while small per-category requests work fine - the same
+// reason Live TV works on them. In LITE mode the full dumps are never
+// fetched; Movies/Series browse category-by-category permanently.
+const LITE = /PlayStation|Nintendo|SMART-TV|SmartTV|Tizen|WebOS|Web0S|NetCast|Roku|CrKey|AFTB|BRAVIA/i
+  .test(navigator.userAgent);
+
 // ── Remembered playlist URL ──────────────────────────────────────────────────
 // The playlist URL survives refresh until "Change Playlist" is pressed.
 // Guarded with try/catch for private-browsing modes that block storage.
@@ -479,7 +487,7 @@ function ensureSection(key) {
 // fetched during connect). Sequential on purpose: two multi-megabyte dumps at
 // once trip providers that cap concurrent API requests.
 function prefetchHeavySections() {
-  if (state.mode !== 'xtream') return;
+  if (state.mode !== 'xtream' || LITE) return;
   (async () => {
     let loadedAny = false;
     for (const key of ['movies', 'series']) {
@@ -739,6 +747,13 @@ async function openSection(key) {
       resetLiveInfo();
       setMobileStep('items');
       showScreen('screen-browse');
+    } else if (LITE) {
+      // Memory-constrained browser: never fetch the full dump - browse
+      // category-by-category only (each category is a small request).
+      renderPendingCats($('gridCats'), key);
+      renderGridItems(); // shows the pick-a-category hint
+      showScreen('screen-grid');
+      return;
     } else {
       // The category names are already known (fetched at connect): show them
       // right away so a single category can be browsed instantly while the
@@ -1162,6 +1177,18 @@ function renderGridItems() {
     // Full list still downloading. "All" has nothing to show yet - keep the
     // download progress on screen; a category renders from the quick cache.
     if (!state.category.startsWith('g:')) {
+      if (!sectionLoads.has(state.section)) {
+        // No full download runs (memory-constrained LITE browsing): the
+        // section is browsed one category at a time.
+        const box = $('gridItems');
+        box.innerHTML = '';
+        const d = document.createElement('div');
+        d.className = 'empty';
+        d.textContent = 'Pick a category to browse ' +
+          SECTION_DEFS[state.section].label + '.';
+        box.appendChild(d);
+        return;
+      }
       sectionReporters.set(state.section,
         showLoadingIn($('gridItems'), SECTION_DEFS[state.section].label));
       return;
