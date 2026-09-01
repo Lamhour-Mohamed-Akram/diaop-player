@@ -28,6 +28,39 @@ const Player = (() => {
     });
   }
 
+  // ── What we actually know about a stream's audio ──────────────────────────
+  // Browsers expose a decoded-bytes counter but no reliable "has audio" flag,
+  // so a video with NO audio track looks exactly like one whose audio codec
+  // the browser cannot decode. Guessing wrong is expensive - it tears down a
+  // perfectly good stream - so a healthy video-only source must be provable.
+  // Returns 'present' | 'none' | 'unknown'.
+  function audioTrackPresence(video) {
+    if (typeof video.mozHasAudio === 'boolean') return video.mozHasAudio ? 'present' : 'none';
+    const tracks = video.audioTracks;
+    if (tracks && typeof tracks.length === 'number') return tracks.length ? 'present' : 'none';
+    if (hls && hls.audioTracks && hls.audioTracks.length) return 'present';
+    if (current && current.sawAudioCodec) return 'present';
+    return 'unknown';
+  }
+
+  // A silent HLS stream often carries a second audio rendition the browser CAN
+  // decode (AAC alongside Dolby AC-3). Switching rendition fixes the sound in
+  // place: no teardown, no reload, no extra connection to the provider - so a
+  // stream whose video is already playing keeps playing.
+  function switchToPlayableAudioTrack() {
+    if (!hls || !Array.isArray(hls.audioTracks) || hls.audioTracks.length < 2) return false;
+    const playable = (t) => {
+      const c = t && t.audioCodec;
+      if (!c) return false;
+      return !window.MediaSource || MediaSource.isTypeSupported(`audio/mp4;codecs="${c}"`);
+    };
+    const currentId = hls.audioTrack;
+    const alt = hls.audioTracks.find(t => t.id !== currentId && playable(t));
+    if (!alt) return false;
+    hls.audioTrack = alt.id;
+    return true;
+  }
+
   function setStatus(msg, isError) {
     if (!current || !current.statusEl) return;
     current.statusEl.textContent = msg || '';
@@ -500,6 +533,13 @@ const Player = (() => {
         if (!(video.currentTime > 2)) return; // not actually playing yet
         const decoded = video.webkitAudioDecodedByteCount;
         if (typeof decoded === 'number' && decoded === 0) {
+          // The source genuinely has no audio track (silent film, video-only
+          // feed): nothing is broken, so do not warn and do not touch the
+          // stream - rerouting a working video is the worst outcome here.
+          if (audioTrackPresence(video) === 'none') return;
+          // Fix it without interrupting playback when the stream offers a
+          // rendition this browser can decode.
+          if (switchToPlayableAudioTrack()) return;
           // Silent playback (usually Dolby AC-3): reroute through the local
           // audio helper automatically when it is running.
           if (!current.viaHelper && await tryHelperReroute()) return;
@@ -572,11 +612,13 @@ const Player = (() => {
       hls.attachMedia(video);
       hls.on(Hls.Events.BUFFER_CODECS, (_, data) => {
         const codec = data && data.audio && data.audio.codec;
+        if (codec && current) current.sawAudioCodec = true;
         if (codec && window.MediaSource && !MediaSource.isTypeSupported(`audio/mp4;codecs="${codec}"`)) {
           audioWarn = `No sound: this stream uses ${codec} (Dolby) audio, which this browser cannot decode.`;
-          // Fix it right away through the local helper instead of waiting for
-          // the silence detector.
-          tryHelperReroute();
+          // Prefer swapping to a rendition the browser can decode - that keeps
+          // the picture running. Only fall back to the helper (a full reload)
+          // when the stream offers no such rendition.
+          if (!switchToPlayableAudioTrack()) tryHelperReroute();
         }
       });
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -667,7 +709,7 @@ const Player = (() => {
       setStatus('This stream has an unsupported URL and was blocked.', true);
       return;
     }
-    current = { video: videoEl, statusEl: statEl, url: rawUrl, originalUrl: rawUrl, retries: RETRY_DELAYS.length, triedHlsFallback: false, viaHelper: false, viaPV: false, viaSS: false, pvRetries: 2, pvErrorHandled: false, origExt: '', resumeAt: (opts && opts.resumeAt) || 0 };
+    current = { video: videoEl, statusEl: statEl, url: rawUrl, originalUrl: rawUrl, retries: RETRY_DELAYS.length, triedHlsFallback: false, viaHelper: false, viaPV: false, viaSS: false, pvRetries: 2, pvErrorHandled: false, sawAudioCodec: false, origExt: '', resumeAt: (opts && opts.resumeAt) || 0 };
     const m = rawUrl.match(VOD_CONTAINER_RX);
     if (m) current.origExt = m[1].toLowerCase();
     begin();
