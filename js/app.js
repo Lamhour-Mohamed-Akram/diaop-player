@@ -144,7 +144,7 @@ function setConnectBusy(busy, msg) {
   $('loadBtn').disabled = busy;
   $('urlInput').disabled = busy;
   const st = $('connectStatus');
-  st.classList.remove('error');
+  st.classList.remove('error', 'notice');
   if (busy) {
     st.hidden = false;
     st.textContent = '';
@@ -170,6 +170,74 @@ function connectError(msg) {
   st.appendChild(retry);
 }
 
+// ── HTTP-edition hand-off notice ─────────────────────────────────────────────
+// Before the FIRST hop to the plain-HTTP edition, pause and explain the
+// switch: http-only providers cannot be loaded from an https page (mixed
+// content), so playback continues on the HTTP edition - the exact same app,
+// nothing else changes. Once the notice has been seen (or the hop taken),
+// later hops are instant again, keeping the zero-action flow.
+const HTTP_NOTICE_KEY = 'browplayer_http_notice_seen';
+let httpNoticeTimer = 0;
+
+function hopToHttpEdition(url) {
+  try { localStorage.setItem(HTTP_NOTICE_KEY, '1'); } catch { /* storage blocked */ }
+  setConnectBusy(true, 'Switching to the HTTP edition…');
+  location.href = HTTP_MIRROR + '#u=' + encodeURIComponent(url);
+}
+
+function offerHttpEdition(url) {
+  let seen = false;
+  try { seen = !!localStorage.getItem(HTTP_NOTICE_KEY); } catch { /* storage blocked */ }
+  if (seen) { hopToHttpEdition(url); return; }
+
+  setConnectBusy(false, null);
+  const st = $('connectStatus');
+  st.hidden = false;
+  st.classList.add('notice');
+  st.textContent = '';
+
+  const mirrorHost = new URL(HTTP_MIRROR).host;
+  const p1 = document.createElement('p');
+  p1.textContent = 'Your playlist uses http:// (not https). Browsers forbid this secure page from ' +
+    'talking to http-only providers, so the player continues on its HTTP edition: ' + mirrorHost + '.';
+  const p2 = document.createElement('p');
+  p2.textContent = 'It is the exact same app and nothing else changes - same features, and your ' +
+    'playlist URL still stays only in your browser. The address bar there will say "Not secure" ' +
+    'simply because your provider only speaks plain http.';
+
+  const go = document.createElement('button');
+  go.type = 'button';
+  go.className = 'btn accent small';
+  go.textContent = 'Continue to ' + mirrorHost;
+  go.onclick = () => { clearInterval(httpNoticeTimer); hopToHttpEdition(url); };
+
+  const stay = document.createElement('button');
+  stay.type = 'button';
+  stay.className = 'btn small';
+  stay.textContent = 'Cancel';
+  stay.onclick = () => {
+    clearInterval(httpNoticeTimer);
+    st.hidden = true;
+    st.classList.remove('notice');
+  };
+
+  const count = document.createElement('p');
+  count.className = 'countdown muted';
+  let secs = 12;
+  count.textContent = `Continuing automatically in ${secs}s…`;
+  clearInterval(httpNoticeTimer);
+  httpNoticeTimer = setInterval(() => {
+    secs -= 1;
+    if (secs <= 0) { clearInterval(httpNoticeTimer); hopToHttpEdition(url); }
+    else count.textContent = `Continuing automatically in ${secs}s…`;
+  }, 1000);
+
+  const row = document.createElement('div');
+  row.className = 'notice-actions';
+  row.append(go, stay);
+  st.append(p1, p2, row, count);
+}
+
 async function fetchText(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
@@ -183,6 +251,7 @@ async function fetchText(url) {
 }
 
 async function connect(raw) {
+  clearInterval(httpNoticeTimer); // a pending hand-off countdown must not fire with a stale URL
   let url = (raw || '').trim();
   if (!/^https?:\/\//i.test(url)) {
     connectError('Enter a valid URL starting with http:// or https://.');
@@ -215,13 +284,13 @@ async function connect(raw) {
       if (/[?&]bridge=1\b/.test(location.search) && await Bridge.probe()) {
         Bridge.enable();
       } else if (location.protocol === 'https:' && location.host !== new URL(HTTP_MIRROR).host) {
-        // Zero-action fallback: hop to the plain-HTTP edition of this same
-        // app, carrying the playlist URL in the #fragment (fragments never
-        // leave the browser, so credentials are not sent to any server).
-        // The http edition auto-connects on arrival. Guarded against loops:
-        // never hop when we are already on the mirror host.
-        setConnectBusy(true, 'This provider needs the HTTP edition - switching…');
-        location.href = HTTP_MIRROR + '#u=' + encodeURIComponent(url);
+        // Fallback: hop to the plain-HTTP edition of this same app, carrying
+        // the playlist URL in the #fragment (fragments never leave the
+        // browser, so credentials are not sent to any server). The http
+        // edition auto-connects on arrival. Guarded against loops: never hop
+        // when we are already on the mirror host. The first hop shows a short
+        // explanatory notice; after that the switch is instant again.
+        offerHttpEdition(url);
         return;
       } else if (location.protocol === 'https:') {
         connectError('The browser forced this page onto HTTPS, where an http-only provider cannot load. ' +
@@ -1236,6 +1305,15 @@ function init() {
     }
   }
 
+  // On the plain-HTTP edition the "you will be switched" wording makes no
+  // sense - say instead why this edition exists.
+  if (location.host === new URL(HTTP_MIRROR).host) {
+    const h = $('httpHint');
+    if (h) h.replaceChildren(
+      document.createTextNode('You are on the HTTP edition - it exists so http:// providers can play. Same app, nothing else changes.'),
+      document.createElement('br'));
+  }
+
   // Keyboard shortcuts for the visible player.
   document.addEventListener('keydown', (e) => {
     const tag = document.activeElement?.tagName;
@@ -1271,6 +1349,9 @@ function consumeHandoffHash() {
   if (handoff && /^https?:\/\//i.test(handoff)) {
     $('urlInput').value = handoff;
     connect(handoff);
+    if (location.protocol === 'http:') {
+      toast('You are now on the HTTP edition (' + location.host + ') - the same app, needed for http:// providers. Nothing else changes.', 'info', 8000);
+    }
     return true;
   }
   return false;
