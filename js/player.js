@@ -311,7 +311,17 @@ const Player = (() => {
       const s = String(err && err.message || err);
       if (/\b(458|509)\b/.test(s)) return 'busy';
       if (current === me && /unsupported-codecs/.test(s)) {
-        setStatus('This title uses a video codec (' + s.replace(/^.*: /, '') + ') that this browser cannot decode.', true);
+        const mime = s.replace(/^.*unsupported-codecs:\s*/, '');
+        let msg;
+        if (/hev1|hvc1|hevc|h265/i.test(mime)) {
+          // The single most common cause on TVs/consoles: 4K/HEVC releases.
+          msg = 'This title is HEVC (H.265) video, which this device cannot decode - no player can fix that here. Look for an H.264 version of the same title: usually the one WITHOUT "4K", "UHD" or "HEVC" in its name.';
+        } else if (!window.MediaSource && !window.ManagedMediaSource) {
+          msg = 'This browser cannot rebuild movie files for playback (no MediaSource support). Movies on this device need an HLS version from the provider.';
+        } else {
+          msg = 'This title uses a video codec this browser cannot decode (' + mime + ').';
+        }
+        setStatus(msg, true);
         return 'handled';
       }
       return 'fail';
