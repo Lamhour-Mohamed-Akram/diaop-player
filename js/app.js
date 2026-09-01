@@ -165,7 +165,7 @@ async function fetchText(url) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
-    const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    const res = await fetch(Bridge.wrapFetch(url), { signal: ctrl.signal, cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     return await res.text();
   } finally {
@@ -183,10 +183,10 @@ async function connect(raw) {
   setConnectBusy(true, 'Checking URL…');
 
   // Mixed content: a page served over HTTPS is forbidden by the browser from
-  // loading anything over plain HTTP. Try the provider over https first (some
-  // panels support both); if it does not, explain honestly - there is no
-  // workaround a static site can offer.
-  if (location.protocol === 'https:' && /^http:\/\//i.test(url)) {
+  // loading anything over plain HTTP. In order: (1) try the provider over
+  // https (some panels support both), (2) use the local bridge helper
+  // (127.0.0.1 is exempt from the mixed-content rule), (3) explain honestly.
+  if (Bridge.needed(url)) {
     const httpsUrl = url.replace(/^http:\/\//i, 'https://');
     setConnectBusy(true, 'Provider uses http - checking if it also supports https…');
     let upgraded = false;
@@ -200,11 +200,16 @@ async function connect(raw) {
     if (upgraded) {
       url = httpsUrl;
     } else {
-      connectError('This provider only works over plain HTTP, and this page is served over HTTPS - ' +
-        'the browser forbids mixing the two (this is a browser security rule, not a bug). ' +
-        'To use this provider, open the player over http instead: run it locally ' +
-        '(python3 -m http.server) or host it on a plain-http address.');
-      return;
+      setConnectBusy(true, 'Provider is http-only - looking for the local bridge…');
+      if (await Bridge.probe()) {
+        Bridge.enable();
+      } else {
+        connectError('This provider only works over plain HTTP, and this page is served over HTTPS - ' +
+          'the browser forbids mixing the two. The fix: run the small local bridge on this computer, ' +
+          'then press Load again. Download audio-helper.py from the GitHub page (link below) and run: ' +
+          'python3 audio-helper.py - it relays your provider through this machine only, nothing else.');
+        return;
+      }
     }
   }
 
@@ -1238,6 +1243,10 @@ async function restoreSession() {
 
   let cache = null;
   try { cache = await DB.get('cache'); } catch { /* cache unavailable */ }
+
+  // A restored session skips connect(), so arm the local bridge here too
+  // when the page is https and the provider http-only.
+  if (Bridge.needed(remembered) && await Bridge.probe()) Bridge.enable();
 
   const usable = cache && cache.url === remembered && cache.sections &&
     Object.keys(cache.sections).length && (Date.now() - cache.savedAt) < CACHE_MAX_AGE_MS;

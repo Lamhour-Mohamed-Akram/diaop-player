@@ -3,6 +3,7 @@
 A privacy-first, **pure-static** IPTV web player. Paste one IPTV URL, press Load, and browse **Live TV, Movies, Series and Radio** entirely in your browser - no backend, no accounts, no tracking.
 
 - **Live app:** [diaop.netlify.app](https://diaop.netlify.app) (also diaop.de)
+- **Source:** [github.com/Lamhour-Mohamed-Akram/diaop-player](https://github.com/Lamhour-Mohamed-Akram/diaop-player)
 - **Privacy & disclaimer:** [policies.html](policies.html)
 
 ## How it works
@@ -49,11 +50,20 @@ python3 -m http.server 9898
 
 It's just static files - upload the folder to Netlify, GitHub Pages, Cloudflare Pages, or any web server. No build step.
 
-> **HTTP providers ⚠️** Most IPTV providers serve over plain HTTP. A page hosted on **HTTPS cannot load HTTP streams** - browsers forbid mixed content, and no static site can work around that. The app automatically tries the provider over https and explains the situation when the provider does not support it. For http-only providers, run the player locally (or host it on a plain-http address).
+> **HTTP providers ⚠️** Most IPTV providers serve over plain HTTP, and a page hosted on **HTTPS cannot load HTTP streams** (browsers forbid mixed content). The app handles this in order: it first tries the provider over https automatically; if the provider is http-only, it uses the **local bridge** below - browsers exempt `127.0.0.1` from the mixed-content rule, so the hosted HTTPS player can relay http providers through your own machine. No third party is ever involved.
 
-## Optional: local audio helper (fallback transcoder)
+## The local helper: HTTPS bridge + audio fallback
 
-A tiny optional helper (`tools/audio-helper.py`, needs ffmpeg) transcodes only the audio track to AAC on the fly for the rare stream the in-browser engine cannot handle. The player detects it automatically on `127.0.0.1:8765`. Without it the app still works; those streams just show an explanatory message.
+One small script, two jobs (`tools/audio-helper.py`):
+
+```sh
+python3 tools/audio-helper.py
+```
+
+1. **HTTPS bridge** - while it runs, the hosted player automatically relays playlists, provider API calls and streams of http-only providers through `127.0.0.1:8765`. Everything stays between your browser, this script on your machine, and your provider.
+2. **Audio fallback** - transcodes Dolby AC-3/E-AC-3 audio to AAC with ffmpeg for the rare stream the in-browser engine cannot handle (this part needs `ffmpeg`; the bridge part works without it).
+
+The player detects it automatically - no configuration. Without it the app still works for https-capable providers; http-only providers get a clear explanation instead of a silent failure.
 
 ## Known limitations
 

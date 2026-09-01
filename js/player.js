@@ -191,7 +191,7 @@ const Player = (() => {
           }
         },
       });
-      await ssPlayer.load(current.originalUrl);
+      await ssPlayer.load(Bridge.wrap(current.originalUrl));
       current.video.play().catch(() => {});
       if (current.resumeAt > 5 && ssPlayer.canSeekTo(current.resumeAt)) {
         const at = current.resumeAt;
@@ -295,7 +295,7 @@ const Player = (() => {
           })();
         }
       });
-      await pvEngine.loadUrl(current.originalUrl);
+      await pvEngine.loadUrl(Bridge.wrap(current.originalUrl));
       if (current !== me) { destroyPvEngine(); return 'fail'; }
       current.video.play().catch(() => {});
       // Watchdog: a stall with nothing buffered this long after startup means
@@ -361,7 +361,7 @@ const Player = (() => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
-      const res = await fetch(url, {
+      const res = await fetch(Bridge.wrap(url), {
         headers: { Range: 'bytes=0-0' },
         signal: ctrl.signal,
         cache: 'no-store',
@@ -568,7 +568,7 @@ const Player = (() => {
         audioPreference: { audioCodec: 'mp4a.40.2' },
       });
       let recovered = false;
-      hls.loadSource(url);
+      hls.loadSource(Bridge.wrap(url));
       hls.attachMedia(video);
       hls.on(Hls.Events.BUFFER_CODECS, (_, data) => {
         const codec = data && data.audio && data.audio.codec;
@@ -654,7 +654,7 @@ const Player = (() => {
           return;
         }
       }
-      video.src = url;
+      video.src = Bridge.wrap(url);
       video.load();
       video.play().catch(() => {});
     }

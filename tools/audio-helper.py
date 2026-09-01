@@ -2,10 +2,15 @@
 """
 Diamond Operatore Player audio helper (OPTIONAL).
 
-Browsers cannot decode Dolby AC-3/E-AC-3 audio or some containers (.mkv/.avi).
-This tiny local helper uses ffmpeg to convert ONLY the audio track to AAC on
-the fly (video is copied untouched), so every stream plays with sound in any
-browser. The web app detects it automatically when it is running.
+Two jobs, both on your own machine only:
+
+1. HTTPS bridge - the hosted player (https://diaop.netlify.app) cannot load
+   plain-HTTP providers directly (browsers forbid mixed content), but pages
+   MAY talk to 127.0.0.1. While this helper runs, the player automatically
+   relays playlists and streams through it, so HTTP providers work on the
+   HTTPS site. Nothing leaves your machine except requests to your provider.
+2. Audio fallback - converts Dolby AC-3/E-AC-3 audio to AAC with ffmpeg for
+   the rare stream the in-browser engine cannot handle (needs ffmpeg).
 
 Usage:
     python3 tools/audio-helper.py          (requires ffmpeg: brew install ffmpeg)
@@ -16,14 +21,16 @@ Licensed under GPL-3.0, same as the player.
 """
 import json
 import os
+import re
 import select
 import shutil
 import socket
 import subprocess
 import sys
 import threading
+import urllib.request
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin, quote as urlquote
 
 HOST, PORT = "127.0.0.1", 8765
 FFMPEG = shutil.which("ffmpeg")
@@ -58,17 +65,126 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
+    def _upstream(self, url, send_range=True):
+        """Open the upstream URL, forwarding the viewer's Range header."""
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "VLC/3.0.21 LibVLC/3.0.21")
+        if send_range and self.headers.get("Range"):
+            req.add_header("Range", self.headers["Range"])
+        return urllib.request.urlopen(req, timeout=20)
+
+    def _bad_gateway(self, err):
+        code = getattr(err, "code", None) or 502
+        try:
+            self.send_response(code)
+            self._cors()
+            self.end_headers()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_GET(self):
         p = urlparse(self.path)
 
         if p.path == "/probe":
-            body = json.dumps({"ok": True, "ffmpeg": bool(FFMPEG)}).encode()
+            body = json.dumps({"ok": True, "ffmpeg": bool(FFMPEG), "bridge": True}).encode()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+
+        # ── HTTPS bridge ──────────────────────────────────────────────────
+        # Browsers forbid an HTTPS page from loading plain-HTTP content, but
+        # 127.0.0.1 is exempt (a "potentially trustworthy origin"). These
+        # endpoints let the hosted HTTPS player reach HTTP-only providers by
+        # relaying through THIS machine only - no third party ever involved.
+
+        if p.path == "/fetch":
+            # Playlists and provider API calls (text/JSON), streamed through.
+            url = (parse_qs(p.query).get("url") or [""])[0]
+            if not url.startswith(("http://", "https://")):
+                self.send_response(400); self._cors(); self.end_headers(); return
+            try:
+                up = self._upstream(url, send_range=False)
+            except Exception as e:
+                self._bad_gateway(e); return
+            self.send_response(up.status)
+            self._cors()
+            self.send_header("Content-Type", up.headers.get("Content-Type", "application/octet-stream"))
+            self.end_headers()
+            try:
+                shutil.copyfileobj(up, self.wfile, 65536)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                up.close()
+            return
+
+        if p.path == "/raw":
+            # Byte-for-byte stream relay with Range passthrough (movies, TS
+            # segments, the single-connection MKV pipeline).
+            url = (parse_qs(p.query).get("url") or [""])[0]
+            if not url.startswith(("http://", "https://")):
+                self.send_response(400); self._cors(); self.end_headers(); return
+            try:
+                up = self._upstream(url)
+            except Exception as e:
+                self._bad_gateway(e); return
+            self.send_response(up.status)
+            self._cors()
+            for h in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
+                if up.headers.get(h):
+                    self.send_header(h, up.headers[h])
+            self.end_headers()
+            try:
+                shutil.copyfileobj(up, self.wfile, 65536)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # viewer stopped/seeked - drop the provider connection too
+            finally:
+                up.close()
+            return
+
+        if p.path == "/hls":
+            # HLS manifest relay: rewrite every URI to come back through this
+            # bridge, else the browser would fetch http segments and be blocked.
+            url = (parse_qs(p.query).get("url") or [""])[0]
+            if not url.startswith(("http://", "https://")):
+                self.send_response(400); self._cors(); self.end_headers(); return
+            try:
+                up = self._upstream(url, send_range=False)
+                text = up.read(8 * 1024 * 1024).decode("utf-8", "replace")
+                final_url = up.geturl()  # follow redirects for correct base
+                up.close()
+            except Exception as e:
+                self._bad_gateway(e); return
+
+            def bridge_uri(u):
+                absu = urljoin(final_url, u.strip())
+                ep = "/hls" if ".m3u8" in absu.split("?")[0].lower() else "/raw"
+                return f"http://{HOST}:{PORT}{ep}?url=" + urlquote(absu, safe="")
+
+            out = []
+            for line in text.splitlines():
+                s = line.strip()
+                if s and not s.startswith("#"):
+                    out.append(bridge_uri(s))
+                elif 'URI="' in line:
+                    line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + bridge_uri(m.group(1)) + '"', line)
+                    out.append(line)
+                else:
+                    out.append(line)
+            body = ("\n".join(out) + "\n").encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
             return
 
         if p.path == "/play":

@@ -33,7 +33,10 @@ const Xtream = (() => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
     try {
-      const res = await fetch(`${creds.server}/player_api.php?${qs}`, { signal: ctrl.signal, cache: 'no-store' });
+      const apiUrl = `${creds.server}/player_api.php?${qs}`;
+      // Through the local bridge when the page is https and the panel http.
+      const res = await fetch(typeof Bridge !== 'undefined' ? Bridge.wrapFetch(apiUrl) : apiUrl,
+        { signal: ctrl.signal, cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return await res.json();
     } finally {
