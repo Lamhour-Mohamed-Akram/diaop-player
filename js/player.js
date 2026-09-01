@@ -248,6 +248,7 @@ const Player = (() => {
   }
 
   async function trySingleStream() {
+    if (LITE_UA) return 'fail'; // consoles/TVs cannot run this pipeline
     if (!current || current.viaSS || current.viaHelper) return false;
     const me = current;
     current.viaSS = true;
@@ -361,8 +362,9 @@ const Player = (() => {
 
   // Returns 'ok' | 'busy' (provider connection limit) | 'fail'.
   async function tryPlaysVideo() {
-    // The ranged engine requires standard MediaSource (absent on iPhone).
-    if (!window.MediaSource) return 'fail';
+    // The ranged engine requires standard MediaSource (absent on iPhone) and
+    // more memory/wasm than console/TV browsers have.
+    if (!window.MediaSource || LITE_UA) return 'fail';
     if (!current || current.viaPV || current.viaHelper || pvPanelBlocked) return 'fail';
     const me = current;
     setStatus('Preparing this file for browser playback…');
@@ -497,6 +499,9 @@ const Player = (() => {
 
   function fallbackFailedMsg() {
     const ext = current && current.origExt ? '.' + current.origExt : 'this format';
+    if (LITE_UA) {
+      return `This title (${ext}) cannot be decoded by this TV/console browser, and the provider does not offer a browser-compatible (HLS) version of it. It will play on a computer or phone.`;
+    }
     return `This title (${ext}) uses a container/codec this browser cannot decode, and the provider does not offer a browser-compatible (HLS) version of it. It will play in a desktop app like VLC.`;
   }
 
@@ -689,6 +694,26 @@ const Player = (() => {
     };
 
     const isHls = /\.m3u8(\?|$)/i.test(url);
+
+    // Startup watchdog for the panel-HLS-first attempt: some panels accept
+    // the .m3u8 request but never deliver a playable stream (slow remuxing,
+    // or a TV browser that stalls without ever firing an error event) - the
+    // status would sit on "Loading stream…" forever. If nothing has started
+    // after 20s, fall back to the direct file instead of waiting.
+    if (current.vodHlsFirst && !current.hlsWatchdog) {
+      current.hlsWatchdog = true;
+      const me = current;
+      const checkStarted = () => {
+        if (current !== me || !me.vodHlsFirst) return;
+        const v = me.video;
+        if (v.readyState >= 2 || (v.buffered && v.buffered.length > 0) || v.currentTime > 0) return;
+        // A busy/slot wait is legitimate waiting - look again later.
+        const txt = (me.statusEl && me.statusEl.textContent) || '';
+        if (/busy|connection limit|waiting/i.test(txt)) { setTimeout(checkStarted, 10000); return; }
+        fallBackFromVodHls('The provider\'s HLS version did not start - trying the file directly…');
+      };
+      setTimeout(checkStarted, 20000);
+    }
 
     if (isHls && window.Hls && Hls.isSupported()) {
       hls = new Hls({
