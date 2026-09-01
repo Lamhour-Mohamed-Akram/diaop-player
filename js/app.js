@@ -206,8 +206,10 @@ async function connect(raw) {
       url = httpsUrl;
     } else {
       setConnectBusy(true, 'Provider is http-only - adapting…');
-      if (await Bridge.probe()) {
-        Bridge.enable(); // silent local bridge, no user action needed
+      // The ?bridge=1 relay exists for the test harness only - the web flow
+      // never asks anyone to install or run anything.
+      if (/[?&]bridge=1\b/.test(location.search) && await Bridge.probe()) {
+        Bridge.enable();
       } else if (location.protocol === 'https:') {
         // Zero-action fallback: hop to the plain-HTTP edition of this same
         // app, carrying the playlist URL in the #fragment (fragments never
@@ -1270,12 +1272,8 @@ async function restoreSession() {
   let cache = null;
   try { cache = await DB.get('cache'); } catch { /* cache unavailable */ }
 
-  // A restored session skips connect(), so arm the local bridge here too
-  // when the page is https and the provider http-only.
-  if (Bridge.needed(remembered) && await Bridge.probe()) Bridge.enable();
-
-  // An http-only provider cannot work from this page without the bridge -
-  // let connect() run its https-upgrade / bridge / http-edition-hop logic.
+  // An http-only provider cannot work from an https page - let connect()
+  // run its https-upgrade / http-edition-hop logic.
   if (Bridge.needed(remembered) && !Bridge.isActive()) {
     connect(remembered);
     return;

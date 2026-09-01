@@ -50,20 +50,11 @@ python3 -m http.server 9898
 
 It's just static files - upload the folder to Netlify, GitHub Pages, Cloudflare Pages, or any web server. No build step.
 
-> **HTTP providers - zero user action.** Most IPTV providers serve over plain HTTP, and a page hosted on **HTTPS cannot load HTTP streams** (browsers forbid mixed content). The app resolves this automatically, in order: (1) it tries the provider over https - many panels support both; (2) if the local bridge below happens to be running, it relays through it; (3) otherwise it **hops to the plain-HTTP edition of this same app** (`http://diaop.de`, GitHub Pages with HTTPS not enforced), carrying the playlist URL in a `#fragment` that never leaves the browser, and connects there by itself. The person watching does nothing either way.
+> **HTTP providers - zero user action.** Most IPTV providers serve over plain HTTP, and a page hosted on **HTTPS cannot load HTTP streams** (browsers forbid mixed content). The app resolves this by itself: it first tries the provider over https (many panels support both); if the provider is http-only, it **hops to the plain-HTTP edition of this same app** (`http://diaop.de`, GitHub Pages with HTTPS not enforced), carrying the playlist URL in a `#fragment` that never leaves the browser, and connects there automatically. Nobody installs, downloads, or configures anything.
 
-## The local helper: HTTPS bridge + audio fallback
+## Developer tools
 
-One small script, two jobs (`tools/audio-helper.py`):
-
-```sh
-python3 tools/audio-helper.py
-```
-
-1. **HTTPS bridge** - while it runs, the hosted player automatically relays playlists, provider API calls and streams of http-only providers through `127.0.0.1:8765`. Everything stays between your browser, this script on your machine, and your provider.
-2. **Audio fallback** - transcodes Dolby AC-3/E-AC-3 audio to AAC with ffmpeg for the rare stream the in-browser engine cannot handle (this part needs `ffmpeg`; the bridge part works without it).
-
-The player detects it automatically - no configuration. Without it the app still works for https-capable providers; http-only providers get a clear explanation instead of a silent failure.
+`tools/audio-helper.py` is a small development utility (localhost relay + ffmpeg audio fallback) used by the test harness. It is never required: the web app is fully self-contained.
 
 ## Known limitations
 

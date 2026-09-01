@@ -320,7 +320,7 @@ const Player = (() => {
       return 'fail';
     }
   }
-  const HELPER_HINT = ' For full sound and format support in any browser, run the optional local helper: "python3 tools/audio-helper.py" (needs ffmpeg), then restart the stream.';
+  const HELPER_HINT = ' Press Restart stream to try again, or use Copy link to open it in a desktop player like VLC.';
 
   // Reroute the current stream through the local helper (once per stream).
   async function tryHelperReroute() {
@@ -462,7 +462,7 @@ const Player = (() => {
     } else if (httpCode === 401 || httpCode === 403) {
       msg = `The provider rejected this stream (HTTP ${httpCode}). The account may not be authorized for it, or the provider blocks web players.`;
     } else if (current && current.pvCorsBlocked) {
-      msg = 'This provider allows only one connection to a movie file at a time, which the in-browser engine cannot work with. Run the local helper for movies on this provider: "python3 tools/audio-helper.py" (it reads the file as a single stream).';
+      msg = 'This provider restricts movie playback in a way this session could not work around. Press Restart stream to try again, or use Copy link to open it in a desktop player like VLC.';
     } else if (current && current.triedHlsFallback) {
       msg = fallbackFailedMsg();
     } else if (httpCode === 404) {
@@ -535,7 +535,7 @@ const Player = (() => {
       const ext = (url.match(/\.([a-z0-9]{2,4})(\?|$)/i)?.[1] || '').toLowerCase();
       let msg;
       if (current.pvCorsBlocked) {
-        msg = 'This provider allows only one connection to a movie file at a time, which the in-browser engine cannot work with. Run the local helper for movies on this provider: "python3 tools/audio-helper.py" (it reads the file as a single stream).';
+        msg = 'This provider restricts movie playback in a way this session could not work around. Press Restart stream to try again, or use Copy link to open it in a desktop player like VLC.';
       } else if (current.viaHelper) {
         msg = 'This stream could not be played even through the local helper. The source may be broken or use a video codec this browser cannot decode.';
       } else if (current.triedHlsFallback) {
