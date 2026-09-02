@@ -43046,7 +43046,9 @@ var SingleStreamPlayer = class {
     const gen = ++this._gen;
     const raw = await this._openConnection(byteOffset);
     const stream = this._composeInputStream(raw, byteOffset);
-    const source = new ReadableStreamSource(stream, { maxCacheSize: 192 * 2 ** 20 });
+    const ssCacheMB = window.BROWPLAYER_SS_CACHE_MB ||
+      (/PlayStation|Nintendo|SMART-TV|SmartTV|Tizen|WebOS|Web0S/i.test(navigator.userAgent) ? 96 : 384);
+    const source = new ReadableStreamSource(stream, { maxCacheSize: ssCacheMB * 2 ** 20 });
     const input = new Input({ formats: ALL_FORMATS, source });
     const videoTrack = await input.getPrimaryVideoTrack();
     const audioTrack = await input.getPrimaryAudioTrack();
@@ -43172,12 +43174,42 @@ var SingleStreamPlayer = class {
       sc.dead = true;
       console.warn(`[single-stream] subtitle track ${sc.idx} (${sc.codec}) stopped: ${why} (${sc.cueCount || 0} cues delivered)`);
     };
+    const CACHE_MISS_RX = /before the cached region/i;
+    const reanchorSub = (sc, ts) => {
+      sc.anchorCount = (sc.anchorCount || 0) + 1;
+      if (sc.anchorCount > 20) {
+        subDied(sc, "keeps falling out of the stream cache");
+        return;
+      }
+      sc.sink.getPacket(ts).then((p) => {
+        if (p) {
+          sc.pkt = p;
+          return;
+        }
+        sc.needsAnchor = true;
+        sc.nextAnchorTs = ts + 10;
+      }).catch((e) => {
+        sc.anchorFails = (sc.anchorFails || 0) + 1;
+        if (sc.anchorFails > 3) {
+          subDied(sc, "re-anchor failed: " + (e && e.message || e));
+          return;
+        }
+        sc.needsAnchor = true;
+        sc.nextAnchorTs = ts + 10;
+      });
+    };
     const startSub = (sc) => {
       sc.started = true;
       sc.sink.getFirstPacket().then((p) => {
         sc.pkt = p;
         if (!p) subDied(sc, "no packets in stream");
-      }).catch((e) => subDied(sc, "first packet failed: " + (e && e.message || e)));
+      }).catch((e) => {
+        const m = String(e && e.message || e);
+        if (CACHE_MISS_RX.test(m)) {
+          sc.needsAnchor = true;
+          sc.nextAnchorTs = 0;
+        } else subDied(sc, "first packet failed: " + m);
+      });
       setTimeout(() => {
         if (gen === this._gen && !sc.pkt && !sc.dead && !sc.cueCount) {
           console.log(`[single-stream] subtitle track ${sc.idx} (${sc.codec}): no cue yet after 60s - still scanning (normal if no dialogue so far)`);
@@ -43206,7 +43238,17 @@ var SingleStreamPlayer = class {
       sc.sink.getNextPacket(p).then((n) => {
         sc.pkt = n;
         if (!n) sc.dead = true;
-      }).catch((e) => subDied(sc, "read failed: " + (e && e.message || e)));
+      }).catch((e) => {
+        const m = String(e && e.message || e);
+        if (CACHE_MISS_RX.test(m)) {
+          // Fell behind the sequential cache - rejoin at the current
+          // position instead of dying (duplicate cues are deduped).
+          sc.needsAnchor = true;
+          sc.nextAnchorTs = 0;
+          return;
+        }
+        subDied(sc, "read failed: " + m);
+      });
     };
     let vPkt = await vSink.getFirstPacket();
     let aPkt = aSink ? await aSink.getFirstPacket() : null;
@@ -43263,6 +43305,10 @@ var SingleStreamPlayer = class {
       for (const sc of subs) {
         if (sc.dead || this._subsDisabled) continue;
         if (!sc.started && nowTs > 1) startSub(sc);
+        if (sc.needsAnchor && nowTs >= (sc.nextAnchorTs || 0)) {
+          sc.needsAnchor = false;
+          reanchorSub(sc, nowTs);
+        }
         while (sc.pkt && sc.pkt.timestamp <= nowTs + 90) deliverSub(sc);
       }
       const takeVideo = vPkt && (!aPkt || vPkt.timestamp <= aPkt.timestamp);
