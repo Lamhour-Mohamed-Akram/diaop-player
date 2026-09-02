@@ -42896,6 +42896,7 @@ var SingleStreamPlayer = class {
     this.onstatus = opts.onstatus || (() => {
     });
     this.dev = !!opts.dev;
+    this._subsDisabled = false;
     this.stats = {
       sourceFetchCount: 0,
       concurrentViolations: 0,
@@ -43142,7 +43143,10 @@ var SingleStreamPlayer = class {
       if (gen !== this._gen || this._aborted) return;
       const msg = String(err && err.message || err);
       this._log("pipeline error: " + msg);
-      if (/network|fetch|timed? ?out|aborted|reset/i.test(msg) && this._resumes < 5) {
+      if (/before the cached region/i.test(msg)) {
+        this._subsDisabled = true;
+      }
+      if (/network|fetch|timed? ?out|aborted|reset|before the cached region/i.test(msg) && this._resumes < 5) {
         this._resumes++;
         const at = Math.max(0, (this.video.currentTime || this._lastSafeTime) - 2);
         this.onstatus({ type: "resuming", at });
@@ -43257,9 +43261,9 @@ var SingleStreamPlayer = class {
       }
       const nowTs = vPkt ? vPkt.timestamp : aPkt ? aPkt.timestamp : 0;
       for (const sc of subs) {
-        if (sc.dead) continue;
+        if (sc.dead || this._subsDisabled) continue;
         if (!sc.started && nowTs > 1) startSub(sc);
-        while (sc.pkt) deliverSub(sc);
+        while (sc.pkt && sc.pkt.timestamp <= nowTs + 90) deliverSub(sc);
       }
       const takeVideo = vPkt && (!aPkt || vPkt.timestamp <= aPkt.timestamp);
       if (takeVideo) {
