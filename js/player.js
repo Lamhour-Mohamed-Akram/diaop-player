@@ -636,6 +636,8 @@ const Player = (() => {
       return;
     } else if (httpCode === 401 || httpCode === 403) {
       msg = `The provider rejected this stream (HTTP ${httpCode}). The account may not be authorized for it, or the provider blocks web players.`;
+    } else if (current && current.audioContainer === 'audio/mpeg') {
+      msg = 'This channel uses MPEG (MP2) broadcast audio, which web browsers cannot decode - the picture works but the audio breaks playback. Use Copy link to watch it in VLC, or try another source of this channel.';
     } else if (current && current.pvCorsBlocked) {
       msg = 'This provider restricts movie playback in a way this session could not work around. Press Restart stream to try again, or use Copy link to open it in a desktop player like VLC.';
     } else if (current && current.triedHlsFallback) {
@@ -742,6 +744,8 @@ const Player = (() => {
         msg = 'Network error while loading this stream. The provider may be busy (connection limit) or blocking browser access.';
       } else if (['mkv', 'avi', 'wmv', 'flv'].includes(ext)) {
         msg = `This title is a .${ext} file whose container/codec your browser cannot decode.` + HELPER_HINT;
+      } else if (current.audioContainer === 'audio/mpeg') {
+        msg = 'This channel uses MPEG (MP2) broadcast audio, which web browsers cannot decode - the picture works but the audio breaks playback. Use Copy link to watch it in VLC, or try another source of this channel.';
       } else if (code === 3) {
         msg = 'This video uses a codec your browser cannot decode (often HEVC/H.265).' + HELPER_HINT;
       } else {
@@ -791,6 +795,11 @@ const Player = (() => {
       hls.on(Hls.Events.BUFFER_CODECS, (_, data) => {
         const codec = data && data.audio && data.audio.codec;
         if (codec && current) current.sawAudioCodec = true;
+        // MP2 (MPEG-1 Layer II) broadcast audio arrives as container
+        // "audio/mpeg" with no codec string. Chrome only decodes Layer III
+        // there, so appends poison the media element - remember the
+        // signature to diagnose the coming failure truthfully.
+        if (current && data && data.audio) current.audioContainer = data.audio.container || '';
         if (codec && window.MediaSource && !MediaSource.isTypeSupported(`audio/mp4;codecs="${codec}"`)) {
           audioWarn = `No sound: this stream uses ${codec} (Dolby) audio, which this browser cannot decode.`;
           // Prefer swapping to a rendition the browser can decode - that keeps
