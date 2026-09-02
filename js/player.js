@@ -611,8 +611,22 @@ const Player = (() => {
     return true;
   }
 
+  // Streams of the big free ad-funded platforms are locked to their own
+  // apps/websites via CORS (e.g. Pluto answers access-control-allow-origin:
+  // http://pluto.tv) - no third-party web player is permitted to fetch them.
+  // Public playlists are full of them; name the real reason instead of a
+  // generic "offline or CORS" guess.
+  const WALLED_RX = /jmp2\.uk|pluto\.tv|plex\.tv|tubi(tv)?\.|samsung.*tvplus|stitcher/i;
+  function walledMsg() {
+    return 'This channel belongs to a free streaming platform (Pluto TV, Samsung TV+, Plex, Tubi…) that only allows playback inside its own official app or website - it blocks all other web players. Open it on the platform\'s own site, or pick another channel.';
+  }
+
   function fail(networkLikely, httpCode) {
     if (hls) { hls.destroy(); hls = null; }
+    if (networkLikely && !httpCode && current && WALLED_RX.test(current.originalUrl)) {
+      setStatus(walledMsg(), true);
+      return;
+    }
     let msg;
     if (httpCode === 458 || httpCode === 509 || httpCode === 551) {
       markProviderBusy(15000);
@@ -816,7 +830,8 @@ const Player = (() => {
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR &&
             data.details === Hls.ErrorDetails.FRAG_LOAD_ERROR && !httpCode) {
           if (hls) { hls.destroy(); hls = null; }
-          setStatus('This channel appears to be offline - the provider returned a stream index, but its video segments cannot be loaded (providers serve a placeholder for dead channels). Try another channel or variant.', true);
+          setStatus(WALLED_RX.test(current.originalUrl) ? walledMsg()
+            : 'This channel appears to be offline - the provider returned a stream index, but its video segments cannot be loaded (providers serve a placeholder for dead channels). Try another channel or variant.', true);
           return;
         }
         fail(data.type === Hls.ErrorTypes.NETWORK_ERROR, httpCode);
