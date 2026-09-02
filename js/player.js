@@ -722,9 +722,14 @@ const Player = (() => {
       if (tryVodHlsFallback()) return;
       // Codec/container failure: remux/transcode in the browser (ranged
       // engine, then the single-connection pipeline), else the local helper.
-      if (code !== 2 && (await tryPlaysVideo()) === 'ok') return;
-      if (code !== 2 && await singleStreamChain()) return;
-      if (code !== 2 && await tryHelperReroute()) return;
+      // Never for .m3u8 URLs - the pipelines remux FILES; feeding them an
+      // HLS playlist can only fail after wasted downloads.
+      const isPlaylistUrl = /\.m3u8(\?|$)/i.test(url);
+      if (!isPlaylistUrl) {
+        if (code !== 2 && (await tryPlaysVideo()) === 'ok') return;
+        if (code !== 2 && await singleStreamChain()) return;
+        if (code !== 2 && await tryHelperReroute()) return;
+      }
       const ext = (url.match(/\.([a-z0-9]{2,4})(\?|$)/i)?.[1] || '').toLowerCase();
       let msg;
       if (current.pvCorsBlocked) {
@@ -837,6 +842,13 @@ const Player = (() => {
         fail(data.type === Hls.ErrorTypes.NETWORK_ERROR, httpCode);
       });
     } else {
+      // An HLS URL landing here means hls.js is unavailable AND the browser
+      // has no native HLS - nothing below can help a playlist. Say so plainly
+      // (should not happen now that hls.js ships with the app).
+      if (isHls && !video.canPlayType('application/vnd.apple.mpegurl')) {
+        setStatus('The HLS playback component could not be loaded in this browser. Reload the page and try again.', true);
+        return;
+      }
       // Containers browsers cannot play natively: remux/transcode them in the
       // browser first (no probe beforehand - the engine's own fetch reports
       // the HTTP status, and an extra request can trip the connection limit).
