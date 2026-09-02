@@ -1608,6 +1608,16 @@ function init() {
     e.preventDefault();
     connect($('urlInput').value);
   };
+  // Optional demo playlist: the open-source iptv-org collection of free,
+  // publicly available channels (github.com/iptv-org/iptv). Served over
+  // https by GitHub Pages with open CORS, so it loads on this edition
+  // directly. Third-party content: channels come and go, and some are
+  // geo-restricted.
+  const DEMO_PLAYLIST = 'https://iptv-org.github.io/iptv/index.m3u';
+  $('demoBtn').onclick = () => {
+    $('urlInput').value = DEMO_PLAYLIST;
+    connect(DEMO_PLAYLIST);
+  };
   $('btnHome').onclick = goHome;
   $('btnBack').onclick = goBack;
   $('btnChange').onclick = changePlaylist;

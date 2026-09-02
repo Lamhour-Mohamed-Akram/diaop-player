@@ -181,6 +181,10 @@ button { font: inherit; color: inherit; background: none; border: none; cursor: 
 .connect-status.notice p { margin: 0 0 10px; }
 .connect-status.notice .countdown { margin: 10px 0 0; font-size: 12.5px; }
 .notice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.demo-row { margin-top: 18px; }
+.demo-row > .hint { margin-top: 0; }
+.demo-row p.hint { margin: 8px auto 0; max-width: 460px; }
+.demo-row a { color: var(--accent); }
 .hint { font-size: 12.5px; margin-top: 22px; line-height: 1.7; }
 
 /* ── Dashboard ───────────────────────────────────────────────────────────── */

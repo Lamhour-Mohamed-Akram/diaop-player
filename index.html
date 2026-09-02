@@ -46,13 +46,13 @@
     "description": "Free privacy-first IPTV web player. Paste your playlist URL and watch Live TV, Movies and Series in the browser - no accounts, no tracking, no servers."
   }
   </script>
-  <link rel="stylesheet" href="css/styles.css?v=63">
+  <link rel="stylesheet" href="css/styles.css?v=64">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.7/hls.min.js" defer></script>
-  <script src="js/bridge.js?v=63" defer></script>
-  <script src="js/playlist.js?v=63" defer></script>
-  <script src="js/xtream.js?v=63" defer></script>
-  <script src="js/player.js?v=63" defer></script>
-  <script src="js/app.js?v=63" defer></script>
+  <script src="js/bridge.js?v=64" defer></script>
+  <script src="js/playlist.js?v=64" defer></script>
+  <script src="js/xtream.js?v=64" defer></script>
+  <script src="js/player.js?v=64" defer></script>
+  <script src="js/app.js?v=64" defer></script>
 </head>
 <body>
 
@@ -80,6 +80,14 @@
           <button id="loadBtn" type="submit" class="btn accent">Load Playlist</button>
         </form>
         <div id="connectStatus" class="connect-status" hidden></div>
+        <div class="demo-row">
+          <span class="hint muted">No playlist? &nbsp;</span>
+          <button id="demoBtn" type="button" class="btn small">📡 Try free public TV (iptv-org)</button>
+          <p class="hint muted">Loads the open-source
+            <a href="https://github.com/iptv-org/iptv" rel="noopener" target="_blank">iptv-org</a>
+            collection of free, publicly available channels from around the world.
+            Not affiliated with this player - channels can be offline or geo-restricted in your country.</p>
+        </div>
         <p class="hint muted">
           Supports M3U playlists, Xtream URLs and direct M3U8 streams.<br>
           <span id="httpHint">Playlists starting with http:// (no &ldquo;s&rdquo;) open on the HTTP edition automatically - same app, nothing else changes.<br></span>
