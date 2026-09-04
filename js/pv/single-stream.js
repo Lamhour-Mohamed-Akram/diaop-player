@@ -43046,8 +43046,7 @@ var SingleStreamPlayer = class {
     const gen = ++this._gen;
     const raw = await this._openConnection(byteOffset);
     const stream = this._composeInputStream(raw, byteOffset);
-    const ssCacheMB = window.BROWPLAYER_SS_CACHE_MB ||
-      (/PlayStation|Nintendo|SMART-TV|SmartTV|Tizen|WebOS|Web0S/i.test(navigator.userAgent) ? 96 : 384);
+    const ssCacheMB = window.BROWPLAYER_SS_CACHE_MB || (/PlayStation|Nintendo|SMART-TV|SmartTV|Tizen|WebOS|Web0S/i.test(navigator.userAgent) ? 96 : 384);
     const source = new ReadableStreamSource(stream, { maxCacheSize: ssCacheMB * 2 ** 20 });
     const input = new Input({ formats: ALL_FORMATS, source });
     const videoTrack = await input.getPrimaryVideoTrack();
@@ -43241,8 +43240,6 @@ var SingleStreamPlayer = class {
       }).catch((e) => {
         const m = String(e && e.message || e);
         if (CACHE_MISS_RX.test(m)) {
-          // Fell behind the sequential cache - rejoin at the current
-          // position instead of dying (duplicate cues are deduped).
           sc.needsAnchor = true;
           sc.nextAnchorTs = 0;
           return;

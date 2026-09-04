@@ -1,0 +1,18 @@
+{
+  "name": "diaop-player",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Diamond Operatore Player - privacy-first, pure-static IPTV web player (no build step to deploy; npm is only for rebuilding the vendored single-stream engine).",
+  "license": "GPL-3.0",
+  "type": "commonjs",
+  "scripts": {
+    "build:single-stream": "esbuild src-single/single-stream.js --bundle --format=esm --outfile=js/pv/single-stream.js",
+    "bump": "node tools/bump-assets.mjs",
+    "serve": "python3 -m http.server 9898"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "hls.js": "1.7.1",
+    "playsvideo": "0.4.7"
+  }
+}

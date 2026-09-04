@@ -54,7 +54,17 @@ It's just static files - upload the folder to Netlify, GitHub Pages, Cloudflare 
 
 ## Developer tools
 
-`tools/audio-helper.py` is a small development utility (localhost relay + ffmpeg audio fallback) used by the test harness. It is never required: the web app is fully self-contained.
+Deploying needs no tooling. `npm` is only used for two developer tasks:
+
+```sh
+npm install                 # once: esbuild + the upstream engine packages (dev only)
+npm run build:single-stream # rebuild js/pv/single-stream.js from src-single/single-stream.js
+npm run bump                # bump the ?v= cache-buster on every asset tag in index.html
+```
+
+- **`js/pv/single-stream.js` is generated.** Its source is `src-single/single-stream.js`; the rest of the bundle is [mediabunny](https://github.com/Vanilagy/mediabunny) (the `kzahel/mediabunny#integration` fork that playsvideo depends on) and [playsvideo](https://github.com/kzahel/playsvideo), pinned in `package-lock.json`. Edit the source, rebuild, and the output is byte-for-byte reproducible.
+- **Cache-busting.** `js/player.js` reads its own `?v=` from its `<script>` tag and reuses it for the dynamically imported engine bundles, so `index.html` is the only place the version lives. Run `npm run bump` (or `npm run bump -- 80` for an explicit number) before deploying a JS/CSS change.
+- `tools/audio-helper.py` is a small optional utility (localhost relay + ffmpeg audio fallback) used by the test harness. It is never required: the web app is fully self-contained.
 
 ## Known limitations
 
@@ -73,9 +83,10 @@ js/playlist.js      M3U parser, classifier, series grouping
 js/xtream.js        Xtream Codes API client + URL auto-detection
 js/player.js        playback orchestration (hls.js / native / engines)
 js/app.js           state, SPA navigation, rendering
-js/pv/              vendored in-browser engines (playsvideo MIT + single-stream pipeline)
-js/vendor/          ffmpeg-core wasm audio decoder
-tools/              optional local audio helper
+js/pv/              vendored in-browser engines (playsvideo MIT + generated single-stream bundle)
+js/vendor/          hls.js + ffmpeg-core wasm audio decoder
+src-single/         source of js/pv/single-stream.js (npm run build:single-stream)
+tools/              bump-assets.mjs (cache-buster) + optional local audio helper
 ```
 
 ## License
